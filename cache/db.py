@@ -205,26 +205,92 @@ class CacheDB:
         )
         await self._db.commit()
 
-    async def get_vault_activities(self, limit: int = 10, offset: int = 0, sport_type: str | None = None) -> list[dict]:
-        """Query activities from the vault, ordered by start_date descending."""
+    async def get_vault_activities(
+        self,
+        limit: int = 10,
+        offset: int = 0,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict]:
+        """Query activities from the vault with optional filters.
+
+        Args:
+            limit: Max activities to return.
+            offset: Skip this many results.
+            sport_type: Filter by Strava sport_type (e.g. "Ride", "Run").
+            after: Only activities on or after this ISO date (e.g. "2026-01-01").
+            before: Only activities before this ISO date (e.g. "2026-04-01").
+        """
+        conditions = []
+        params = []
+
         if sport_type:
-            cursor = await self._db.execute(
-                "SELECT data FROM activities WHERE sport_type = ? ORDER BY start_date DESC LIMIT ? OFFSET ?",
-                (sport_type, limit, offset),
-            )
-        else:
-            cursor = await self._db.execute(
-                "SELECT data FROM activities ORDER BY start_date DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
+            conditions.append("sport_type = ?")
+            params.append(sport_type)
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT data FROM activities {where} ORDER BY start_date DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         return [json.loads(row[0]) for row in rows]
 
-    async def get_vault_activity_count(self) -> int:
-        """Return total number of activities in the vault."""
-        cursor = await self._db.execute("SELECT COUNT(*) FROM activities")
+    async def get_vault_activity_count(
+        self,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> int:
+        """Return count of activities in the vault, with optional filters."""
+        conditions = []
+        params = []
+
+        if sport_type:
+            conditions.append("sport_type = ?")
+            params.append(sport_type)
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(f"SELECT COUNT(*) FROM activities {where}", params)
         row = await cursor.fetchone()
         return row[0]
+
+    async def get_vault_sport_type_summary(
+        self,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict]:
+        """Return activity counts grouped by sport_type, with optional date filters."""
+        conditions = []
+        params = []
+
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT sport_type, COUNT(*) as cnt FROM activities {where} GROUP BY sport_type ORDER BY cnt DESC",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [{"sport_type": row[0], "count": row[1]} for row in rows]
 
     async def get_vault_date_range(self) -> dict | None:
         """Return the earliest and latest activity dates in the vault."""
