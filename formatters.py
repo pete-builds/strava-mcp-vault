@@ -160,16 +160,16 @@ def _list_stats_ride(a: dict) -> list[str]:
     stats = []
     dist = a.get("distance")
     if dist is not None:
-        stats.append(f"**Distance:** {_format_distance(dist)}")
+        stats.append(f"**📏 Distance:** {_format_distance(dist)}")
     avg_speed = a.get("average_speed")
     if avg_speed:
-        stats.append(f"**Speed:** {_format_speed_mph(avg_speed)}")
+        stats.append(f"**🚀 Speed:** {_format_speed_mph(avg_speed)}")
     time_val = a.get("moving_time")
     if time_val:
-        stats.append(f"**Time:** {time_val}")
+        stats.append(f"**⏱️ Time:** {time_val}")
     elev = a.get("total_elevation_gain")
     if elev:
-        stats.append(f"**Elevation:** {_format_elevation(elev)}")
+        stats.append(f"**⛰️ Elevation:** {_format_elevation(elev)}")
     return stats
 
 
@@ -178,16 +178,16 @@ def _list_stats_run(a: dict) -> list[str]:
     stats = []
     dist = a.get("distance")
     if dist is not None:
-        stats.append(f"**Distance:** {_format_distance(dist)}")
+        stats.append(f"**📏 Distance:** {_format_distance(dist)}")
     avg_speed = a.get("average_speed")
     if avg_speed:
-        stats.append(f"**Pace:** {_format_pace(avg_speed)}")
+        stats.append(f"**👟 Pace:** {_format_pace(avg_speed)}")
     time_val = a.get("moving_time")
     if time_val:
-        stats.append(f"**Time:** {time_val}")
+        stats.append(f"**⏱️ Time:** {time_val}")
     elev = a.get("total_elevation_gain")
     if elev:
-        stats.append(f"**Elevation:** {_format_elevation(elev)}")
+        stats.append(f"**⛰️ Elevation:** {_format_elevation(elev)}")
     return stats
 
 
@@ -197,10 +197,10 @@ def _list_stats_snow(a: dict) -> list[str]:
     stats = []
     elapsed = a.get("elapsed_time")
     if elapsed:
-        stats.append(f"**Time on Mountain:** {elapsed}")
+        stats.append(f"**⛷️ Time on Mountain:** {elapsed}")
     elev = a.get("total_elevation_gain")
     if elev:
-        stats.append(f"**Elevation:** {_format_elevation(elev)}")
+        stats.append(f"**⛰️ Elevation:** {_format_elevation(elev)}")
     return stats
 
 
@@ -209,13 +209,13 @@ def _list_stats_walk(a: dict) -> list[str]:
     stats = []
     dist = a.get("distance")
     if dist is not None:
-        stats.append(f"**Distance:** {_format_distance(dist)}")
+        stats.append(f"**📏 Distance:** {_format_distance(dist)}")
     elapsed = a.get("elapsed_time")
     if elapsed:
-        stats.append(f"**Time:** {elapsed}")
+        stats.append(f"**⏱️ Time:** {elapsed}")
     elev = a.get("total_elevation_gain")
     if elev:
-        stats.append(f"**Elevation:** {_format_elevation(elev)}")
+        stats.append(f"**⛰️ Elevation:** {_format_elevation(elev)}")
     return stats
 
 
@@ -226,13 +226,13 @@ def _list_stats_swim(a: dict) -> list[str]:
     if dist is not None:
         # Distance is already in miles from _shape_activity; convert back to meters for yards
         meters = dist * METERS_PER_MILE
-        stats.append(f"**Distance:** {_format_distance_yards(meters)}")
+        stats.append(f"**📏 Distance:** {_format_distance_yards(meters)}")
     time_val = a.get("moving_time")
     if time_val:
-        stats.append(f"**Time:** {time_val}")
+        stats.append(f"**⏱️ Time:** {time_val}")
     avg_speed = a.get("average_speed")
     if avg_speed:
-        stats.append(f"**Pace:** {_format_swim_pace(avg_speed)}")
+        stats.append(f"**👟 Pace:** {_format_swim_pace(avg_speed)}")
     return stats
 
 
@@ -241,13 +241,13 @@ def _list_stats_default(a: dict) -> list[str]:
     stats = []
     dist = a.get("distance")
     if dist is not None:
-        stats.append(f"**Distance:** {_format_distance(dist)}")
+        stats.append(f"**📏 Distance:** {_format_distance(dist)}")
     time_val = a.get("moving_time")
     if time_val:
-        stats.append(f"**Time:** {time_val}")
+        stats.append(f"**⏱️ Time:** {time_val}")
     elev = a.get("total_elevation_gain")
     if elev:
-        stats.append(f"**Elevation:** {_format_elevation(elev)}")
+        stats.append(f"**⛰️ Elevation:** {_format_elevation(elev)}")
     return stats
 
 
@@ -269,7 +269,7 @@ def format_recent_activities(activities: list) -> str:
     if not activities:
         return "No recent activities found."
 
-    lines = [f"## Recent Activities ({len(activities)})\n"]
+    lines = [f"## 🏃 Recent Activities ({len(activities)})\n"]
 
     for i, a in enumerate(activities, 1):
         sport_type = a.get("sport_type") or a.get("type") or "Activity"
@@ -299,11 +299,11 @@ def format_recent_activities(activities: list) -> str:
         max_hr = a.get("max_heartrate")
         cals = a.get("calories")
         if avg_hr:
-            hr_parts.append(f"**Avg HR:** {_hr(avg_hr)}")
+            hr_parts.append(f"**❤️ Avg HR:** {_hr(avg_hr)}")
         if max_hr:
-            hr_parts.append(f"**Max HR:** {_hr(max_hr)}")
+            hr_parts.append(f"**💓 Max HR:** {_hr(max_hr)}")
         if cals:
-            hr_parts.append(f"**Calories:** {int(cals)}")
+            hr_parts.append(f"**🔥 Calories:** {int(cals)}")
         if hr_parts:
             lines.append(" | ".join(hr_parts))
 
@@ -311,20 +311,20 @@ def format_recent_activities(activities: list) -> str:
         meta_parts = []
         suffer = a.get("suffer_score")
         if suffer:
-            meta_parts.append(f"**Effort:** {int(suffer)}")
+            meta_parts.append(f"**💪 Effort:** {int(suffer)}")
         kudos = a.get("kudos_count")
         if kudos:
-            meta_parts.append(f"**Kudos:** {kudos}")
+            meta_parts.append(f"**👍 Kudos:** {kudos}")
         achievements = a.get("achievement_count")
         if achievements:
-            meta_parts.append(f"**PRs:** {achievements}")
+            meta_parts.append(f"**🏆 PRs:** {achievements}")
         if meta_parts:
             lines.append(" | ".join(meta_parts))
 
         # Gear name (if resolved)
         gear_name = a.get("gear_name")
         if gear_name:
-            lines.append(f"**Gear:** {gear_name}")
+            lines.append(f"**⚙️ Gear:** {gear_name}")
 
         lines.append(f"*ID: {a.get('id')}*\n")
 
@@ -379,22 +379,22 @@ def _detail_performance_ride(activity: dict, lines: list) -> None:
     distance_m = activity.get("distance")
     if distance_m is not None:
         miles = distance_m / METERS_PER_MILE
-        lines.append(f"- **Distance:** {miles:.2f} mi")
+        lines.append(f"- **📏 Distance:** {miles:.2f} mi")
 
     moving_time = activity.get("moving_time")
     if moving_time is not None:
-        lines.append(f"- **Moving Time:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Moving Time:** {_format_duration(moving_time)}")
 
     elapsed = activity.get("elapsed_time")
     if elapsed is not None and moving_time is not None and abs(elapsed - moving_time) > 60:
-        lines.append(f"- **Elapsed Time:** {_format_duration(elapsed)}")
+        lines.append(f"- **⏱️ Elapsed Time:** {_format_duration(elapsed)}")
 
     avg_speed = activity.get("average_speed")
     if avg_speed:
-        lines.append(f"- **Avg Speed:** {_format_speed_mph(avg_speed)}")
+        lines.append(f"- **🚀 Avg Speed:** {_format_speed_mph(avg_speed)}")
     max_speed = activity.get("max_speed")
     if max_speed:
-        lines.append(f"- **Max Speed:** {_format_speed_mph(max_speed)}")
+        lines.append(f"- **🚀 Max Speed:** {_format_speed_mph(max_speed)}")
 
     _detail_elevation(activity, lines)
 
@@ -404,22 +404,22 @@ def _detail_performance_run(activity: dict, lines: list) -> None:
     distance_m = activity.get("distance")
     if distance_m is not None:
         miles = distance_m / METERS_PER_MILE
-        lines.append(f"- **Distance:** {miles:.2f} mi")
+        lines.append(f"- **📏 Distance:** {miles:.2f} mi")
 
     moving_time = activity.get("moving_time")
     if moving_time is not None:
-        lines.append(f"- **Moving Time:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Moving Time:** {_format_duration(moving_time)}")
 
     elapsed = activity.get("elapsed_time")
     if elapsed is not None and moving_time is not None and abs(elapsed - moving_time) > 60:
-        lines.append(f"- **Elapsed Time:** {_format_duration(elapsed)}")
+        lines.append(f"- **⏱️ Elapsed Time:** {_format_duration(elapsed)}")
 
     avg_speed = activity.get("average_speed")
     if avg_speed:
-        lines.append(f"- **Avg Pace:** {_format_pace(avg_speed)}")
+        lines.append(f"- **👟 Avg Pace:** {_format_pace(avg_speed)}")
     max_speed = activity.get("max_speed")
     if max_speed:
-        lines.append(f"- **Best Pace:** {_format_pace(max_speed)}")
+        lines.append(f"- **👟 Best Pace:** {_format_pace(max_speed)}")
 
     _detail_elevation(activity, lines)
 
@@ -430,24 +430,24 @@ def _detail_performance_snow(activity: dict, lines: list) -> None:
     # Runs (laps)
     laps = activity.get("laps")
     if laps and isinstance(laps, list):
-        lines.append(f"- **Runs:** {len(laps)}")
+        lines.append(f"- **🎿 Runs:** {len(laps)}")
 
     # Elapsed time is the key metric (includes lift time)
     elapsed = activity.get("elapsed_time")
     if elapsed is not None:
-        lines.append(f"- **Time on Mountain:** {_format_duration(elapsed)}")
+        lines.append(f"- **⛷️ Time on Mountain:** {_format_duration(elapsed)}")
 
     # Moving time is less relevant but still interesting
     moving_time = activity.get("moving_time")
     if moving_time is not None:
-        lines.append(f"- **Time Moving:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Time Moving:** {_format_duration(moving_time)}")
 
     _detail_elevation(activity, lines)
 
     # Max speed is fun for snow sports
     max_speed = activity.get("max_speed")
     if max_speed:
-        lines.append(f"- **Max Speed:** {_format_speed_mph(max_speed)}")
+        lines.append(f"- **🚀 Max Speed:** {_format_speed_mph(max_speed)}")
 
 
 def _detail_performance_walk(activity: dict, lines: list) -> None:
@@ -455,15 +455,15 @@ def _detail_performance_walk(activity: dict, lines: list) -> None:
     distance_m = activity.get("distance")
     if distance_m is not None:
         miles = distance_m / METERS_PER_MILE
-        lines.append(f"- **Distance:** {miles:.2f} mi")
+        lines.append(f"- **📏 Distance:** {miles:.2f} mi")
 
     elapsed = activity.get("elapsed_time")
     if elapsed is not None:
-        lines.append(f"- **Time:** {_format_duration(elapsed)}")
+        lines.append(f"- **⏱️ Time:** {_format_duration(elapsed)}")
 
     moving_time = activity.get("moving_time")
     if moving_time is not None and elapsed is not None and abs(elapsed - moving_time) > 60:
-        lines.append(f"- **Moving Time:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Moving Time:** {_format_duration(moving_time)}")
 
     _detail_elevation(activity, lines)
 
@@ -472,19 +472,19 @@ def _detail_performance_swim(activity: dict, lines: list) -> None:
     """Add swim performance stats to detail view."""
     distance_m = activity.get("distance")
     if distance_m is not None:
-        lines.append(f"- **Distance:** {_format_distance_yards(distance_m)}")
+        lines.append(f"- **📏 Distance:** {_format_distance_yards(distance_m)}")
 
     moving_time = activity.get("moving_time")
     if moving_time is not None:
-        lines.append(f"- **Time:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Time:** {_format_duration(moving_time)}")
 
     avg_speed = activity.get("average_speed")
     if avg_speed:
-        lines.append(f"- **Pace:** {_format_swim_pace(avg_speed)}")
+        lines.append(f"- **👟 Pace:** {_format_swim_pace(avg_speed)}")
 
     laps = activity.get("laps")
     if laps and isinstance(laps, list):
-        lines.append(f"- **Laps:** {len(laps)}")
+        lines.append(f"- **🔄 Laps:** {len(laps)}")
 
 
 def _detail_performance_default(activity: dict, lines: list) -> None:
@@ -492,22 +492,22 @@ def _detail_performance_default(activity: dict, lines: list) -> None:
     distance_m = activity.get("distance")
     if distance_m is not None:
         miles = distance_m / METERS_PER_MILE
-        lines.append(f"- **Distance:** {miles:.2f} mi")
+        lines.append(f"- **📏 Distance:** {miles:.2f} mi")
 
     moving_time = activity.get("moving_time")
     if moving_time is not None:
-        lines.append(f"- **Moving Time:** {_format_duration(moving_time)}")
+        lines.append(f"- **⏱️ Moving Time:** {_format_duration(moving_time)}")
 
     elapsed = activity.get("elapsed_time")
     if elapsed is not None and moving_time is not None and abs(elapsed - moving_time) > 60:
-        lines.append(f"- **Elapsed Time:** {_format_duration(elapsed)}")
+        lines.append(f"- **⏱️ Elapsed Time:** {_format_duration(elapsed)}")
 
     avg_speed = activity.get("average_speed")
     max_speed = activity.get("max_speed")
     if avg_speed:
-        lines.append(f"- **Avg Speed:** {_format_speed_mph(avg_speed)}")
+        lines.append(f"- **🚀 Avg Speed:** {_format_speed_mph(avg_speed)}")
     if max_speed:
-        lines.append(f"- **Max Speed:** {_format_speed_mph(max_speed)}")
+        lines.append(f"- **🚀 Max Speed:** {_format_speed_mph(max_speed)}")
 
     _detail_elevation(activity, lines)
 
@@ -516,13 +516,13 @@ def _detail_elevation(activity: dict, lines: list) -> None:
     """Add elevation stats (shared across activity types)."""
     elev = activity.get("total_elevation_gain")
     if elev:
-        lines.append(f"- **Elevation Gain:** {_format_elevation(elev)}")
+        lines.append(f"- **⛰️ Elevation Gain:** {_format_elevation(elev)}")
 
     elev_high = activity.get("elev_high")
     elev_low = activity.get("elev_low")
     if elev_high is not None and elev_low is not None:
         lines.append(
-            f"- **Elevation Range:** {_format_elevation(elev_low)} to {_format_elevation(elev_high)}"
+            f"- **⛰️ Elevation Range:** {_format_elevation(elev_low)} to {_format_elevation(elev_high)}"
         )
 
 
@@ -548,7 +548,7 @@ def format_activity_detail(activity: dict) -> str:
     lines.append(f"**{sport_type}** | {date}\n")
 
     # Performance section (activity-type-specific)
-    lines.append("### Performance")
+    lines.append("### ⚡ Performance")
     detail_fn = _DETAIL_DISPATCH.get(category, _detail_performance_default)
     detail_fn(activity, lines)
 
@@ -556,7 +556,7 @@ def format_activity_detail(activity: dict) -> str:
     if category == "snow":
         laps = activity.get("laps")
         if laps and isinstance(laps, list) and len(laps) > 1:
-            lines.append("\n### Runs Breakdown")
+            lines.append("\n### 🎿 Runs Breakdown")
             for i, lap in enumerate(laps, 1):
                 lap_elapsed = lap.get("elapsed_time")
                 lap_elev = lap.get("total_elevation_gain")
@@ -574,16 +574,16 @@ def format_activity_detail(activity: dict) -> str:
     avg_hr = activity.get("average_heartrate")
     max_hr = activity.get("max_heartrate")
     if avg_hr or max_hr:
-        lines.append("\n### Heart Rate")
+        lines.append("\n### ❤️ Heart Rate")
         if avg_hr:
-            lines.append(f"- **Average:** {_hr(avg_hr)}")
+            lines.append(f"- **❤️ Average:** {_hr(avg_hr)}")
         if max_hr:
-            lines.append(f"- **Max:** {_hr(max_hr)}")
+            lines.append(f"- **💓 Max:** {_hr(max_hr)}")
 
     # Calories
     cals = activity.get("calories")
     if cals:
-        lines.append(f"- **Calories:** {int(cals)}")
+        lines.append(f"- **🔥 Calories:** {int(cals)}")
 
     # Description
     desc = activity.get("description")
@@ -595,13 +595,13 @@ def format_activity_detail(activity: dict) -> str:
     if gear and isinstance(gear, dict):
         gear_name = gear.get("name")
         if gear_name:
-            lines.append(f"\n**Gear:** {gear_name}")
+            lines.append(f"\n**⚙️ Gear:** {gear_name}")
 
     # Kudos / comments
     kudos = activity.get("kudos_count", 0)
     comments = activity.get("comment_count", 0)
     if kudos or comments:
-        lines.append(f"\n**Kudos:** {kudos} | **Comments:** {comments}")
+        lines.append(f"\n**👍 Kudos:** {kudos} | **💬 Comments:** {comments}")
 
     lines.append(f"\n*Activity ID: {activity.get('id')}*")
 
@@ -721,18 +721,18 @@ def format_athlete_profile(profile: dict) -> str:
 
 def format_athlete_stats(stats: dict) -> str:
     """Format athlete stats (YTD + all-time) as markdown."""
-    lines = ["## Athlete Statistics\n"]
+    lines = ["## 📈 Athlete Statistics\n"]
 
     sections = [
-        ("recent_run_totals", "Recent Runs"),
-        ("ytd_run_totals", "Year-to-Date Runs"),
-        ("all_run_totals", "All-Time Runs"),
-        ("recent_ride_totals", "Recent Rides"),
-        ("ytd_ride_totals", "Year-to-Date Rides"),
-        ("all_ride_totals", "All-Time Rides"),
-        ("recent_swim_totals", "Recent Swims"),
-        ("ytd_swim_totals", "Year-to-Date Swims"),
-        ("all_swim_totals", "All-Time Swims"),
+        ("recent_run_totals", "🏃 Recent Runs"),
+        ("ytd_run_totals", "🏃 Year-to-Date Runs"),
+        ("all_run_totals", "🏃 All-Time Runs"),
+        ("recent_ride_totals", "🚴 Recent Rides"),
+        ("ytd_ride_totals", "🚴 Year-to-Date Rides"),
+        ("all_ride_totals", "🚴 All-Time Rides"),
+        ("recent_swim_totals", "🏊 Recent Swims"),
+        ("ytd_swim_totals", "🏊 Year-to-Date Swims"),
+        ("all_swim_totals", "🏊 All-Time Swims"),
     ]
 
     for key, label in sections:
@@ -752,22 +752,22 @@ def format_athlete_stats(stats: dict) -> str:
         m = (int(moving_time) % 3600) // 60
 
         lines.append(f"### {label}")
-        lines.append(f"- **Activities:** {count}")
-        lines.append(f"- **Distance:** {miles:.1f} mi")
-        lines.append(f"- **Time:** {h}h {m}m")
+        lines.append(f"- **🔢 Activities:** {count}")
+        lines.append(f"- **📏 Distance:** {miles:.1f} mi")
+        lines.append(f"- **⏱️ Time:** {h}h {m}m")
         if elev:
-            lines.append(f"- **Elevation:** {_format_elevation(elev)}")
+            lines.append(f"- **⛰️ Elevation:** {_format_elevation(elev)}")
         lines.append("")
 
     biggest_ride = stats.get("biggest_ride_distance")
     if biggest_ride:
         lines.append(
-            f"**Longest Ride:** {biggest_ride / METERS_PER_MILE:.1f} mi"
+            f"**🏆 Longest Ride:** {biggest_ride / METERS_PER_MILE:.1f} mi"
         )
     biggest_climb = stats.get("biggest_climb_elevation_gain")
     if biggest_climb:
         lines.append(
-            f"**Biggest Climb:** {_format_elevation(biggest_climb)}"
+            f"**⛰️ Biggest Climb:** {_format_elevation(biggest_climb)}"
         )
 
     return "\n".join(lines)
@@ -775,7 +775,7 @@ def format_athlete_stats(stats: dict) -> str:
 
 def format_cache_stats(stats: dict) -> str:
     """Format cache + vault statistics as markdown."""
-    lines = ["## Vault & Cache Statistics\n"]
+    lines = ["## 📦 Vault & Cache Statistics\n"]
 
     # Vault section
     vault = stats.get("vault", {})
@@ -783,7 +783,7 @@ def format_cache_stats(stats: dict) -> str:
     date_range = vault.get("date_range")
     sync_log = vault.get("sync_log")
 
-    lines.append("### Vault (Permanent Storage)\n")
+    lines.append("### 🏛️ Vault (Permanent Storage)\n")
     lines.append(f"- **Activities in vault:** {vault_total}")
 
     if date_range:
@@ -808,13 +808,13 @@ def format_cache_stats(stats: dict) -> str:
     db_size = stats.get("db_size_bytes", 0)
     db_kb = db_size / 1024
 
-    lines.append("### Cache (TTL-based)\n")
+    lines.append("### ⏳ Cache (TTL-based)\n")
     lines.append(f"- **Cached items:** {total}")
     lines.append(f"- **Database size:** {db_kb:.1f} KB\n")
 
     categories = stats.get("categories", {})
     if categories:
-        lines.append("### Hit/Miss by Category\n")
+        lines.append("### 🎯 Hit/Miss by Category\n")
         lines.append("| Category | Hits | Misses | Hit Rate |")
         lines.append("|----------|------|--------|----------|")
         for cat, data in sorted(categories.items()):
@@ -827,7 +827,7 @@ def format_cache_stats(stats: dict) -> str:
 
     rate_limit = stats.get("rate_limit")
     if rate_limit:
-        lines.append("### API Rate Limits\n")
+        lines.append("### 🚦 API Rate Limits\n")
         short = rate_limit.get("short", {})
         long_ = rate_limit.get("long", {})
         lines.append(
@@ -861,17 +861,17 @@ def format_sync_result(result: dict) -> str:
         days = mode.replace("window_", "").replace("d", "")
         mode_label = f"Window sync (last {days} days)"
 
-    lines = ["## Sync Complete\n"]
-    lines.append(f"- **Mode:** {mode_label}")
-    lines.append(f"- **Activities fetched:** {fetched}")
-    lines.append(f"- **New activities added:** {new}")
-    lines.append(f"- **Total in vault:** {total}")
-    lines.append(f"- **API calls used:** {calls}")
+    lines = ["## ✅ Sync Complete\n"]
+    lines.append(f"- **🔄 Mode:** {mode_label}")
+    lines.append(f"- **📥 Activities fetched:** {fetched}")
+    lines.append(f"- **🆕 New activities added:** {new}")
+    lines.append(f"- **🏛️ Total in vault:** {total}")
+    lines.append(f"- **📡 API calls used:** {calls}")
 
     if date_range:
         earliest = _format_date(date_range.get("earliest"))
         latest = _format_date(date_range.get("latest"))
-        lines.append(f"- **Vault date range:** {earliest} to {latest}")
+        lines.append(f"- **📅 Vault date range:** {earliest} to {latest}")
 
     return "\n".join(lines)
 
