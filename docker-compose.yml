@@ -1,0 +1,18 @@
+services:
+  strava-mcp-vault:
+    build: .
+    container_name: strava-mcp-vault
+    ports:
+      - "${STRAVA_MCP_PORT:-18201}:18201"
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - strava-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  strava-data:
