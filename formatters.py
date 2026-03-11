@@ -331,6 +331,46 @@ def format_recent_activities(activities: list) -> str:
     return "\n".join(lines)
 
 
+def format_recent_activities_compact(activities: list) -> str:
+    """Format activities as a compact one-line-per-activity table."""
+    if not activities:
+        return "📭 No activities found."
+
+    lines = [f"## 📋 Activities ({len(activities)})\n"]
+    lines.append("| # | Date | Type | Name | Distance | Time | Elevation | HR |")
+    lines.append("|---|------|------|------|----------|------|-----------|----|")
+
+    for i, a in enumerate(activities, 1):
+        sport_type = a.get("sport_type") or a.get("type") or "?"
+        icon = _sport_icon(sport_type)
+        name = a.get("name", "Untitled")
+        # Truncate long names
+        if len(name) > 25:
+            name = name[:22] + "..."
+
+        date_str = a.get("start_date_local", "")
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            short_date = dt.strftime("%b %-d")
+        except (ValueError, TypeError, AttributeError):
+            short_date = "?"
+
+        dist = a.get("distance")
+        dist_str = f"{dist:.1f}mi" if dist is not None else ""
+
+        time_val = a.get("moving_time", "")
+
+        elev = a.get("total_elevation_gain")
+        elev_str = _format_elevation(elev) if elev else ""
+
+        avg_hr = a.get("average_heartrate")
+        hr_str = f"{int(avg_hr)}" if avg_hr else ""
+
+        lines.append(f"| {i} | {short_date} | {icon} | {name} | {dist_str} | {time_val} | {elev_str} | {hr_str} |")
+
+    return "\n".join(lines)
+
+
 # ── Detail view: activity-type-specific formatting ────────────────────
 
 
@@ -832,5 +872,54 @@ def format_sync_result(result: dict) -> str:
         earliest = _format_date(date_range.get("earliest"))
         latest = _format_date(date_range.get("latest"))
         lines.append(f"- **Vault date range:** {earliest} to {latest}")
+
+    return "\n".join(lines)
+
+
+def format_vault_query(result: dict) -> str:
+    """Format vault query summary with counts and totals."""
+    total = result.get("total_activities", 0)
+    breakdown = result.get("breakdown_by_type", [])
+    dist_m = result.get("total_distance_meters", 0)
+    time_s = result.get("total_moving_time_seconds", 0)
+    elev_m = result.get("total_elevation_meters", 0)
+    filters = result.get("filters", {})
+
+    # Build filter description
+    filter_parts = []
+    if filters.get("sport_type"):
+        filter_parts.append(f"type={filters['sport_type']}")
+    if filters.get("after"):
+        filter_parts.append(f"after {filters['after']}")
+    if filters.get("before"):
+        filter_parts.append(f"before {filters['before']}")
+    filter_desc = ", ".join(filter_parts) if filter_parts else "all activities"
+
+    lines = [f"## 🔍 Vault Query Results\n"]
+    lines.append(f"**Filter:** {filter_desc}")
+    lines.append(f"**Total Activities:** {total}\n")
+
+    if total == 0:
+        lines.append("📭 No activities match these filters.")
+        return "\n".join(lines)
+
+    # Totals
+    miles = dist_m / METERS_PER_MILE
+    hours = time_s / 3600
+
+    lines.append("### 📊 Totals\n")
+    lines.append(f"- 📏 **Distance:** {miles:.1f} mi")
+    lines.append(f"- ⏱️ **Moving Time:** {hours:.1f} hours")
+    lines.append(f"- ⛰️ **Elevation:** {_format_elevation(elev_m)}")
+
+    # Breakdown by type
+    if breakdown:
+        lines.append("\n### 🏷️ By Activity Type\n")
+        lines.append("| Type | Count | Icon |")
+        lines.append("|------|-------|------|")
+        for entry in breakdown:
+            st = entry["sport_type"] or "Unknown"
+            icon = _sport_icon(st)
+            lines.append(f"| {st} | {entry['count']} | {icon} |")
 
     return "\n".join(lines)
