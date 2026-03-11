@@ -110,8 +110,14 @@ class CacheManager:
     # Public methods
     # ------------------------------------------------------------------
 
-    async def get_recent_activities(self, count: int = 10) -> list:
-        """Return a shaped list of recent activities.
+    async def get_recent_activities(
+        self,
+        count: int = 10,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list:
+        """Return a shaped list of recent activities with optional filters.
 
         Local-first: reads from the vault if it has data.
         Falls back to the API if the vault is empty.
@@ -119,11 +125,15 @@ class CacheManager:
         vault_count = await self.db.get_vault_activity_count()
 
         if vault_count > 0:
-            # Local-first: read from vault
-            raw_activities = await self.db.get_vault_activities(limit=min(count, 200))
+            raw_activities = await self.db.get_vault_activities(
+                limit=min(count, 200),
+                sport_type=sport_type,
+                after=after,
+                before=before,
+            )
             shaped = [_shape_activity(a) for a in raw_activities]
         else:
-            # Vault empty: fall back to API + old cache path
+            # Vault empty: fall back to API (no filtering available)
             key = f"activities:list:{count}"
             category = "activities_list"
 
@@ -149,6 +159,54 @@ class CacheManager:
                 a["gear_name"] = gear_map[gid]
 
         return shaped
+
+    async def query_vault(
+        self,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> dict:
+        """Return a summary of vault activities matching the given filters.
+
+        Returns counts by sport_type, total distance/time, and date range.
+        """
+        # Get count and breakdown
+        total = await self.db.get_vault_activity_count(
+            sport_type=sport_type, after=after, before=before,
+        )
+        breakdown = await self.db.get_vault_sport_type_summary(
+            after=after, before=before,
+        )
+
+        # If a sport_type filter is active, only include that type in breakdown
+        if sport_type:
+            breakdown = [b for b in breakdown if b["sport_type"] == sport_type]
+
+        # Pull matching activities for aggregate stats
+        activities = await self.db.get_vault_activities(
+            limit=1000, sport_type=sport_type, after=after, before=before,
+        )
+
+        total_distance_m = 0
+        total_moving_time_s = 0
+        total_elevation_m = 0
+        for a in activities:
+            total_distance_m += a.get("distance") or 0
+            total_moving_time_s += a.get("moving_time") or 0
+            total_elevation_m += a.get("total_elevation_gain") or 0
+
+        return {
+            "total_activities": total,
+            "breakdown_by_type": breakdown,
+            "total_distance_meters": total_distance_m,
+            "total_moving_time_seconds": total_moving_time_s,
+            "total_elevation_meters": total_elevation_m,
+            "filters": {
+                "sport_type": sport_type,
+                "after": after,
+                "before": before,
+            },
+        }
 
     async def _resolve_gear_name(self, gear_id: str) -> str | None:
         """Look up a gear name by ID, cached for 7 days."""
