@@ -11,12 +11,14 @@ from cache.manager import CacheManager
 from clients.strava import StravaClient, RateLimitError
 from formatters import (
     format_recent_activities,
+    format_recent_activities_compact,
     format_activity_detail,
     format_activity_streams,
     format_athlete_profile,
     format_athlete_stats,
     format_cache_stats,
     format_sync_result,
+    format_vault_query,
 )
 
 load_dotenv()
@@ -83,15 +85,55 @@ mcp = FastMCP("strava-vault", host="0.0.0.0", port=port, lifespan=lifespan)
 
 
 @mcp.tool()
-async def get_recent_activities(count: int = 10) -> str:
+async def get_recent_activities(
+    count: int = 10,
+    sport_type: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    compact: bool = False,
+) -> str:
     """List recent Strava activities with distance, time, and stats.
 
     Args:
         count: Number of activities to return (default 10, max 200).
+        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide", "Snowboard").
+        after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
+        before: Only activities before this date (ISO format, e.g. "2026-04-01").
+        compact: If true, return a compact one-line-per-activity table instead of full cards.
     """
     try:
-        results = await manager.get_recent_activities(count)
+        results = await manager.get_recent_activities(
+            count, sport_type=sport_type, after=after, before=before,
+        )
+        if compact:
+            return format_recent_activities_compact(results)
         return format_recent_activities(results)
+    except RateLimitError as e:
+        return str(e)
+
+
+@mcp.tool()
+async def query_vault(
+    sport_type: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+) -> str:
+    """Query the activity vault for counts and totals with optional filters.
+
+    Returns a summary with total count, distance, time, elevation,
+    and breakdown by activity type. Much lighter than fetching full
+    activity lists. Great for questions like "how many rides this year?"
+
+    Args:
+        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
+        after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
+        before: Only activities before this date (ISO format, e.g. "2026-04-01").
+    """
+    try:
+        result = await manager.query_vault(
+            sport_type=sport_type, after=after, before=before,
+        )
+        return format_vault_query(result)
     except RateLimitError as e:
         return str(e)
 
