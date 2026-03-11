@@ -1,0 +1,6 @@
+.env
+*.db
+__pycache__/
+.git/
+data/
+docs/

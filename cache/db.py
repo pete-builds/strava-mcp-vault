@@ -5,6 +5,8 @@ from datetime import datetime
 
 import aiosqlite
 
+from cache.encryption import encrypt_token, decrypt_token
+
 
 class CacheDB:
     def __init__(self, db_path: str):
@@ -145,8 +147,8 @@ class CacheDB:
         if row is None:
             return None
         return {
-            "access_token": row[0],
-            "refresh_token": row[1],
+            "access_token": decrypt_token(row[0]),
+            "refresh_token": decrypt_token(row[1]),
             "expires_at": row[2],
         }
 
@@ -154,7 +156,7 @@ class CacheDB:
         await self._db.execute(
             "INSERT OR REPLACE INTO tokens (id, access_token, refresh_token, expires_at) "
             "VALUES (1, ?, ?, ?)",
-            (access_token, refresh_token, expires_at),
+            (encrypt_token(access_token), encrypt_token(refresh_token), expires_at),
         )
         await self._db.commit()
 

@@ -3,9 +3,12 @@ services:
     build: .
     container_name: strava-mcp-vault
     ports:
-      - "${STRAVA_MCP_PORT:-18201}:18201"
+      - "${MCP_BIND_HOST:-0.0.0.0}:${STRAVA_MCP_PORT:-18201}:18201"
     env_file: .env
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - strava-data:/app/data
     healthcheck:

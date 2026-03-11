@@ -177,4 +177,9 @@ async def sync_activities(days_back: int = 0) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    import uvicorn
+    from auth import maybe_add_auth
+
+    app = mcp.sse_app()
+    maybe_add_auth(app)
+    uvicorn.run(app, host="0.0.0.0", port=port)
