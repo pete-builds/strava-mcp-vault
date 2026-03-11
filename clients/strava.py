@@ -163,11 +163,14 @@ class StravaClient(BaseClient):
         page: int = 1,
         per_page: int = 30,
         after: int | None = None,
+        before: int | None = None,
     ) -> list:
         """GET /athlete/activities - returns a list of the athlete's activities."""
         params = {"page": page, "per_page": per_page}
         if after is not None:
             params["after"] = after
+        if before is not None:
+            params["before"] = before
         return await self._get("/athlete/activities", params=params)
 
     async def get_activity(self, activity_id: int) -> dict:
@@ -188,6 +191,10 @@ class StravaClient(BaseClient):
             "key_type": "time",
         }
         return await self._get(f"/activities/{activity_id}/streams", params=params)
+
+    async def get_gear(self, gear_id: str) -> dict:
+        """GET /gear/{id} - returns gear details (bike or shoe)."""
+        return await self._get(f"/gear/{gear_id}")
 
     async def get_athlete_stats(self, athlete_id: int) -> dict:
         """GET /athletes/{id}/stats - returns the athlete's aggregate stats."""

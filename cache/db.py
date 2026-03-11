@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from datetime import datetime
 
 import aiosqlite
 
@@ -34,6 +35,24 @@ class CacheDB:
                 access_token TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS activities (
+                id INTEGER PRIMARY KEY,
+                data TEXT NOT NULL,
+                start_date TEXT,
+                start_date_local TEXT,
+                sport_type TEXT,
+                synced_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_activities_start ON activities(start_date);
+            CREATE INDEX IF NOT EXISTS idx_activities_sport ON activities(sport_type);
+
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_sync_at REAL,
+                total_synced INTEGER DEFAULT 0,
+                mode TEXT
             );
         """)
         await self._db.commit()
@@ -144,6 +163,118 @@ class CacheDB:
             "DELETE FROM cache WHERE expires_at < ?", (time.time(),)
         )
         await self._db.commit()
+
+    # ── Vault (permanent activity storage) ────────────────────────────
+
+    async def upsert_activity(self, activity: dict):
+        """Store or update a single activity in the vault."""
+        now = time.time()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO activities (id, data, start_date, start_date_local, sport_type, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                activity["id"],
+                json.dumps(activity),
+                activity.get("start_date"),
+                activity.get("start_date_local"),
+                activity.get("sport_type") or activity.get("type"),
+                now,
+            ),
+        )
+
+    async def upsert_activities_batch(self, activities: list[dict]):
+        """Store multiple activities in a single transaction."""
+        now = time.time()
+        rows = [
+            (
+                a["id"],
+                json.dumps(a),
+                a.get("start_date"),
+                a.get("start_date_local"),
+                a.get("sport_type") or a.get("type"),
+                now,
+            )
+            for a in activities
+        ]
+        await self._db.executemany(
+            "INSERT OR REPLACE INTO activities (id, data, start_date, start_date_local, sport_type, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        await self._db.commit()
+
+    async def get_vault_activities(self, limit: int = 10, offset: int = 0, sport_type: str | None = None) -> list[dict]:
+        """Query activities from the vault, ordered by start_date descending."""
+        if sport_type:
+            cursor = await self._db.execute(
+                "SELECT data FROM activities WHERE sport_type = ? ORDER BY start_date DESC LIMIT ? OFFSET ?",
+                (sport_type, limit, offset),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT data FROM activities ORDER BY start_date DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+        rows = await cursor.fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    async def get_vault_activity_count(self) -> int:
+        """Return total number of activities in the vault."""
+        cursor = await self._db.execute("SELECT COUNT(*) FROM activities")
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def get_vault_date_range(self) -> dict | None:
+        """Return the earliest and latest activity dates in the vault."""
+        cursor = await self._db.execute(
+            "SELECT MIN(start_date_local), MAX(start_date_local) FROM activities"
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return {"earliest": row[0], "latest": row[1]}
+
+    async def get_latest_activity_epoch(self) -> int | None:
+        """Return the epoch timestamp of the most recent activity in the vault.
+
+        Used for incremental sync (the 'after' parameter).
+        """
+        cursor = await self._db.execute(
+            "SELECT MAX(start_date) FROM activities"
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        # start_date is ISO format like "2026-03-10T12:00:00Z"
+        try:
+            dt = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except (ValueError, TypeError):
+            return None
+
+    async def update_sync_log(self, total_synced: int, mode: str):
+        """Record sync completion."""
+        now = time.time()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO sync_log (id, last_sync_at, total_synced, mode) "
+            "VALUES (1, ?, ?, ?)",
+            (now, total_synced, mode),
+        )
+        await self._db.commit()
+
+    async def get_sync_log(self) -> dict | None:
+        """Return the last sync info."""
+        cursor = await self._db.execute(
+            "SELECT last_sync_at, total_synced, mode FROM sync_log WHERE id = 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "last_sync_at": row[0],
+            "total_synced": row[1],
+            "mode": row[2],
+        }
 
     async def close(self):
         if self._db:

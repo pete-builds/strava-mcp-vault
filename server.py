@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import sys
@@ -10,6 +9,15 @@ from mcp.server.fastmcp import FastMCP
 from cache.db import CacheDB
 from cache.manager import CacheManager
 from clients.strava import StravaClient, RateLimitError
+from formatters import (
+    format_recent_activities,
+    format_activity_detail,
+    format_activity_streams,
+    format_athlete_profile,
+    format_athlete_stats,
+    format_cache_stats,
+    format_sync_result,
+)
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -83,7 +91,7 @@ async def get_recent_activities(count: int = 10) -> str:
     """
     try:
         results = await manager.get_recent_activities(count)
-        return json.dumps(results, indent=2)
+        return format_recent_activities(results)
     except RateLimitError as e:
         return str(e)
 
@@ -97,7 +105,7 @@ async def get_activity(activity_id: int) -> str:
     """
     try:
         result = await manager.get_activity(activity_id)
-        return json.dumps(result, indent=2)
+        return format_activity_detail(result)
     except RateLimitError as e:
         return str(e)
 
@@ -114,7 +122,7 @@ async def get_activity_streams(
     """
     try:
         result = await manager.get_activity_streams(activity_id, stream_types)
-        return json.dumps(result, indent=2)
+        return format_activity_streams(result, activity_id)
     except RateLimitError as e:
         return str(e)
 
@@ -124,7 +132,7 @@ async def get_athlete_profile() -> str:
     """Get the authenticated Strava athlete's profile."""
     try:
         result = await manager.get_athlete_profile()
-        return json.dumps(result, indent=2)
+        return format_athlete_profile(result)
     except RateLimitError as e:
         return str(e)
 
@@ -134,7 +142,7 @@ async def get_athlete_stats() -> str:
     """Get year-to-date and all-time activity statistics."""
     try:
         result = await manager.get_athlete_stats()
-        return json.dumps(result, indent=2)
+        return format_athlete_stats(result)
     except RateLimitError as e:
         return str(e)
 
@@ -143,22 +151,27 @@ async def get_athlete_stats() -> str:
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     stats = await manager.get_cache_stats()
-    return json.dumps(stats, indent=2)
+    return format_cache_stats(stats)
 
 
 @mcp.tool()
-async def sync_activities(days_back: int = 30) -> str:
-    """Bulk-sync recent activities into the local cache.
+async def sync_activities(days_back: int = 0) -> str:
+    """Sync Strava activities into the local vault.
 
-    Fetches all activities from the last N days and caches them locally.
-    This reduces future API calls and enables offline access to cached data.
+    Smart sync behavior:
+    - First run (empty vault): pulls ALL historical activities
+    - Subsequent runs: only fetches activities newer than the latest stored
+    - With days_back > 0: fetches a specific time window (useful for refreshing)
+
+    Activities are stored permanently in the vault. No data expires.
+    Typically takes 1-3 API calls for a full sync (~200 activities).
 
     Args:
-        days_back: Number of days to sync (default 30).
+        days_back: 0 = auto (incremental or full). >0 = fetch last N days.
     """
     try:
         result = await manager.sync_activities(days_back)
-        return json.dumps(result, indent=2)
+        return format_sync_result(result)
     except RateLimitError as e:
         return str(e)
 
