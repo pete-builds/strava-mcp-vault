@@ -159,7 +159,7 @@ Copy `access_token` and `refresh_token` from the JSON response into your `.env` 
 git clone https://github.com/pete-builds/strava-mcp-vault.git
 cd strava-mcp-vault
 cp .env.example .env
-# Edit .env with your credentials (see OAuth Walkthrough above)
+# Edit .env with your credentials (see Setup above)
 docker compose up -d
 ```
 
@@ -171,10 +171,16 @@ Once the container is running, you need to register it as an MCP server so Claud
 
 **Which IP to use:** Use the IP of the machine running the Docker container, not `localhost` (unless Claude Code runs on the same machine). If you're on a Tailscale network, use the Tailscale IP. If running everything on one machine, `localhost` or `127.0.0.1` works.
 
+**Authentication:** If you set `MCP_AUTH_TOKEN` in your `.env` (recommended), you need to pass it as a Bearer token header when registering. If you didn't set one, the server accepts unauthenticated requests.
+
 Via CLI (recommended):
 
 ```bash
-claude mcp add strava --transport sse --url http://YOUR_SERVER_IP:18201/sse
+# With auth token:
+claude mcp add strava http://YOUR_SERVER_IP:18201/sse --transport sse -H "Authorization: Bearer YOUR_MCP_AUTH_TOKEN"
+
+# Without auth:
+claude mcp add strava http://YOUR_SERVER_IP:18201/sse --transport sse
 ```
 
 Or add it to your MCP config JSON manually:
@@ -184,7 +190,10 @@ Or add it to your MCP config JSON manually:
   "mcpServers": {
     "strava": {
       "type": "sse",
-      "url": "http://YOUR_SERVER_IP:18201/sse"
+      "url": "http://YOUR_SERVER_IP:18201/sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_AUTH_TOKEN"
+      }
     }
   }
 }
