@@ -98,17 +98,26 @@ Total Activities: 24
 
 - Docker and Docker Compose
 - A Strava account
-- A Strava API application (create one at <https://www.strava.com/settings/api>)
+- A Strava API application (see below)
 
-## OAuth Walkthrough
+## Setup
 
-This is the hardest part, and Strava's docs don't make it easy. Here's what actually works.
+### Create a Strava API application
 
-### Set your callback domain
+1. Go to <https://www.strava.com/settings/api>
+2. Fill in the form:
+   - **Application Name:** Whatever you want (e.g., "My MCP Server")
+   - **Category:** Choose any
+   - **Club:** Leave blank
+   - **Website:** Any URL you own (e.g., `https://example.com`)
+   - **Authorization Callback Domain:** A domain you own (e.g., `example.com`). This cannot be `localhost`. It doesn't need to be running a web server or have anything to do with this project. You're only using it as a redirect target to grab an authorization code (explained below).
+3. After creating the app, you'll see your **Client ID** and **Client Secret** on the app settings page. You'll need both for the next steps.
 
-When creating your Strava API app, Strava requires a real domain for the "Authorization Callback Domain." Localhost won't work. Use any domain you own, even if it has nothing to do with this project. A personal site, a business site, anything. It doesn't need to run a web server or have any special endpoint set up. You're only using it as a redirect target so you can grab the authorization code from the URL (explained below).
+### OAuth: Get your access tokens
 
-### Build the authorization URL
+This is the trickiest part, and Strava's docs don't make it easy. Here's what actually works.
+
+**Step 1: Build the authorization URL**
 
 > **CRITICAL: You MUST include `activity:read_all` in the scope parameter.** The default `read` scope only gives profile access. Without `activity:read_all`, every activity request returns a 401 with `"field": "activity:read_permission", "code": "missing"`. This is the #1 gotcha and it's poorly documented.
 
@@ -116,7 +125,9 @@ When creating your Strava API app, Strava requires a real domain for the "Author
 https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=https://YOUR_DOMAIN&response_type=code&scope=read,activity:read_all
 ```
 
-### Authorize and grab the code
+Replace `YOUR_CLIENT_ID` with the Client ID from your app settings, and `YOUR_DOMAIN` with the callback domain you entered when creating the app.
+
+**Step 2: Authorize and grab the code**
 
 Open that URL in your browser. Authorize the app. Strava will redirect to your callback domain.
 
@@ -130,7 +141,7 @@ https://yourdomain.com/?state=&code=abc123def456ghi789&scope=read,activity:read_
 
 Copy the value between `code=` and `&scope` (in this example, `abc123def456ghi789`). That's your one-time authorization code for the next step.
 
-### Exchange the code for tokens
+**Step 3: Exchange the code for tokens**
 
 ```bash
 curl -X POST https://www.strava.com/oauth/token \
