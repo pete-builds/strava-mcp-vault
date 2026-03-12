@@ -68,8 +68,8 @@ class CacheDB:
         """)
         await self._db.commit()
 
-        # Migration: add lat/lon columns if not present, then backfill from stored JSON
-        for col in ("start_lat REAL", "start_lon REAL"):
+        # Migration: add lat/lon and location_override columns if not present
+        for col in ("start_lat REAL", "start_lon REAL", "location_override TEXT"):
             try:
                 await self._db.execute(f"ALTER TABLE activities ADD COLUMN {col}")
             except Exception:
@@ -362,19 +362,30 @@ class CacheDB:
 
         where = f"WHERE {' AND '.join(conditions)}"
         cursor = await self._db.execute(
-            f"SELECT data, start_lat, start_lon FROM activities {where} ORDER BY start_date DESC",
+            f"SELECT data, start_lat, start_lon, location_override FROM activities {where} ORDER BY start_date DESC",
             params,
         )
         rows = await cursor.fetchall()
 
         results = []
-        for data, a_lat, a_lon in rows:
+        for data, a_lat, a_lon, loc_override in rows:
             d = _haversine_miles(a_lat, a_lon, lat, lon)
             if d <= radius_miles:
                 activity = json.loads(data)
                 activity["_distance_from_query_miles"] = round(d, 1)
+                if loc_override:
+                    activity["_location_override"] = loc_override
                 results.append(activity)
         return results
+
+    async def set_location_override(self, activity_id: int, location: str | None) -> bool:
+        """Set (or clear) a manual location string for an activity. Returns True if found."""
+        cursor = await self._db.execute(
+            "UPDATE activities SET location_override = ? WHERE id = ?",
+            (location, activity_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_vault_date_range(self) -> dict | None:
         """Return the earliest and latest activity dates in the vault."""

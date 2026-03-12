@@ -234,9 +234,31 @@ async def get_activities_near(
         ]
         location_map = await reverse_geocode_many(activity_coords)
         for a in results:
-            coords_key = tuple(a["start_latlng"][:2]) if a.get("start_latlng") else None
-            a["_location"] = location_map.get(coords_key, "") if coords_key else ""
+            if a.get("_location_override"):
+                a["_location"] = a["_location_override"]
+            else:
+                coords_key = tuple(a["start_latlng"][:2]) if a.get("start_latlng") else None
+                a["_location"] = location_map.get(coords_key, "") if coords_key else ""
     return format_activities_near(results, location, radius_miles)
+
+
+@mcp.tool()
+async def set_activity_location(activity_id: int, location: str | None = None) -> str:
+    """Manually set (or clear) the display location for a vault activity.
+
+    Useful for activities recorded indoors or without GPS where no location
+    can be reverse geocoded. Pass location=None to clear an override.
+
+    Args:
+        activity_id: The Strava activity ID to update.
+        location: Location string to display (e.g. "Ithaca, NY"). Pass null to clear.
+    """
+    found = await manager.db.set_location_override(activity_id, location)
+    if not found:
+        return f"Activity {activity_id} not found in vault."
+    if location:
+        return f"✅ Location for activity {activity_id} set to \"{location}\"."
+    return f"✅ Location override cleared for activity {activity_id}."
 
 
 @mcp.tool()
