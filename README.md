@@ -13,6 +13,17 @@ This is not affiliated with or endorsed by Strava. It's a personal project built
 - Supports bulk sync to pull your full activity history into the local vault
 - Runs as a Docker container with SSE transport for network-wide access
 
+## Why a server instead of running locally?
+
+Most MCP servers run on your local machine alongside your AI client. This one is designed to run on a separate server (a homelab box, a VPS, anything with Docker) for a few reasons:
+
+- **Access from any machine.** Connect from your laptop, your desktop, or any device running Claude Code. One server, multiple clients.
+- **Your vault stays put.** The SQLite database lives on the server in a Docker volume. You don't lose your cached data when you reimage a laptop or switch machines.
+- **Always running.** Token refresh happens in the background even when your laptop is off. Your data stays fresh.
+- **Backups are simpler.** One database file on one server. Back it up however you back up everything else.
+
+If you only use one machine, this works fine running locally too. The Docker setup is the same either way.
+
 ## Why not just use the Strava API directly?
 
 Strava's rate limits are tight: 100 requests per 15 minutes, 1,000 per day. Every time your AI asks a question, it burns API calls. Other Strava MCP servers exist, but they're thin API wrappers that proxy every request, don't cache anything, and break when tokens expire.
