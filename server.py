@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from cache.db import CacheDB
+from cache.geocode import forward_geocode
 from cache.manager import CacheManager
 from clients.strava import StravaClient, RateLimitError
 from formatters import (
@@ -19,6 +20,7 @@ from formatters import (
     format_cache_stats,
     format_sync_result,
     format_vault_query,
+    format_activities_near,
 )
 
 load_dotenv()
@@ -194,6 +196,37 @@ async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     stats = await manager.get_cache_stats()
     return format_cache_stats(stats)
+
+
+@mcp.tool()
+async def get_activities_near(
+    location: str,
+    radius_miles: float = 20.0,
+    sport_type: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+) -> str:
+    """Find vault activities that started near a given location.
+
+    Geocodes the location name, then searches the local vault for activities
+    that started within the specified radius. No Strava API calls are made.
+
+    Args:
+        location: Place name to search near (e.g. "Syracuse, NY", "Central Park").
+        radius_miles: Search radius in miles (default 20).
+        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
+        after: Only activities on or after this date (ISO format, e.g. "2025-01-01").
+        before: Only activities before this date (ISO format, e.g. "2026-01-01").
+    """
+    coords = await forward_geocode(location)
+    if coords is None:
+        return f"Could not geocode '{location}'. Try a more specific place name."
+    lat, lon = coords
+    results = await manager.db.get_activities_near_location(
+        lat, lon, radius_miles=radius_miles,
+        sport_type=sport_type, after=after, before=before,
+    )
+    return format_activities_near(results, location, radius_miles)
 
 
 @mcp.tool()
