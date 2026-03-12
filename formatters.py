@@ -935,8 +935,8 @@ def format_activities_near(
 
     lines = [f"## 📍 Activities Near {place} ({radius_miles:.0f} mi radius)\n"]
     lines.append(f"**{len(activities)} activities found**\n")
-    lines.append("| Date | Type | Distance | Time | From Center | Name |")
-    lines.append("|------|------|----------|------|-------------|------|")
+    lines.append("| Date | Type | Distance | Time | Location | From Center | Name |")
+    lines.append("|------|------|----------|------|----------|-------------|------|")
 
     for a in activities:
         date = (a.get("start_date_local") or "")[:10]
@@ -946,8 +946,9 @@ def format_activities_near(
         t = a.get("moving_time", 0)
         h, m = divmod(t // 60, 60)
         time_str = f"{h}:{m:02d}"
+        location = a.get("_location") or "—"
         near = a.get("_distance_from_query_miles", "?")
         name = a.get("name") or "—"
-        lines.append(f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {near} mi | {name} |")
+        lines.append(f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |")
 
     return "\n".join(lines)

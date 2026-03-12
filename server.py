@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from cache.db import CacheDB
-from cache.geocode import forward_geocode
+from cache.geocode import forward_geocode, reverse_geocode_many
 from cache.manager import CacheManager
 from clients.strava import StravaClient, RateLimitError
 from formatters import (
@@ -226,6 +226,16 @@ async def get_activities_near(
         lat, lon, radius_miles=radius_miles,
         sport_type=sport_type, after=after, before=before,
     )
+    if results:
+        activity_coords = [
+            (a["start_latlng"][0], a["start_latlng"][1])
+            for a in results
+            if a.get("start_latlng") and len(a["start_latlng"]) == 2
+        ]
+        location_map = await reverse_geocode_many(activity_coords)
+        for a in results:
+            coords_key = tuple(a["start_latlng"][:2]) if a.get("start_latlng") else None
+            a["_location"] = location_map.get(coords_key, "") if coords_key else ""
     return format_activities_near(results, location, radius_miles)
 
 
