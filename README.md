@@ -1,34 +1,29 @@
 # strava-mcp-vault
 
-A Strava MCP server that caches your data locally in SQLite, so you own it.
+An unofficial, custom-built MCP server that lets your AI assistant talk to your Strava data. Connect it to Claude Code (or any MCP-compatible client) and ask questions like "how far did I run this week?" or "show me my ride stats for January." It pulls your activities, stats, and streams from Strava's API and stores everything in a local SQLite vault so you're not hitting the API every time.
 
-## Why build this?
+This is not affiliated with or endorsed by Strava. It's a personal project built to scratch an itch.
 
-Strava's rate limits are tight: 100 requests per 15 minutes, 1,000 per day. Every time Claude asks "how far did I run this week?" it burns API calls. Tokens expire every 6 hours, and if your server doesn't handle refresh, it just breaks.
+## What it does
 
-This server solves all of that:
+- Connects your AI to Strava through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+- Caches your activity data locally in SQLite so repeat queries are instant
+- Handles OAuth token refresh automatically (Strava tokens expire every 6 hours)
+- Formats output with sport-specific stats, emoji labels, and markdown tables
+- Supports bulk sync to pull your full activity history into the local vault
+- Runs as a Docker container with SSE transport for network-wide access
 
-- **SQLite caching** with configurable TTLs per data type (1 hour to 7 days)
-- **Automatic OAuth token refresh** with race-condition-safe async locking
-- **Bulk sync** to pull 30+ days of activity history into cache with one command
-- **Rate limit awareness** by tracking remaining API budget from Strava's response headers
-- **Offline access** for any previously cached data
-- **SSE transport** via FastMCP for network-wide access from any machine
+## Why not just use the Strava API directly?
 
-## How it differs from other Strava MCP servers
-
-Several Strava MCP implementations exist. They're all thin API wrappers:
-
-- They proxy every request to Strava's API (no caching)
-- They don't handle token refresh (tokens expire, server breaks)
-- They don't persist data locally
+Strava's rate limits are tight: 100 requests per 15 minutes, 1,000 per day. Every time your AI asks a question, it burns API calls. Other Strava MCP servers exist, but they're thin API wrappers that proxy every request, don't cache anything, and break when tokens expire.
 
 strava-mcp-vault takes a different approach:
 
-- Cache-aside architecture: check SQLite first, hit the API only on cache miss
-- Tokens stored in SQLite, refreshed automatically before expiration
-- Paginated bulk sync pulls entire activity histories without manual intervention
-- Hit/miss tracking so you can see exactly how the cache is performing
+- **Cache-aside architecture:** check SQLite first, hit the API only on cache miss
+- **Automatic token management:** tokens stored in SQLite, refreshed before expiration
+- **Bulk sync:** paginated import pulls entire activity histories without manual intervention
+- **Offline access:** anything previously cached works without an internet connection
+- **Hit/miss tracking:** see exactly how the cache is performing and how much API budget remains
 
 For a simpler setup that just wraps the existing npm package in Docker, see [strava-mcp-docker](https://github.com/pete-builds/strava-mcp-docker).
 
@@ -43,6 +38,50 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 | `get_athlete_stats` | YTD and all-time totals | 1 day |
 | `get_cache_stats` | Cache hit/miss rates and API rate limit status | none |
 | `sync_activities` | Bulk-sync recent activities into cache | varies |
+| `query_vault` | Filter and aggregate cached activities by date, sport type | none |
+
+## Example Output
+
+Ask your AI "show me my recent activities" and you'll get formatted, sport-specific cards:
+
+```
+## 🏃 Recent Activities (3)
+
+### 🚴 Morning Commute
+Ride | Mar 10, 2026 3:45 PM
+
+📏 Distance: 5.50 mi | 🚀 Speed: 12.3 mph | ⏱️ Time: 0:27:34 | ⛰️ Elevation: 245 ft
+❤️ Avg HR: 145 bpm | 💓 Max HR: 167 bpm | 🔥 Calories: 450
+
+### 🏃 Evening Run
+Run | Mar 9, 2026 6:15 PM
+
+📏 Distance: 3.20 mi | 🏃 Pace: 8:59/mi | ⏱️ Time: 0:28:45 | ⛰️ Elevation: 125 ft
+❤️ Avg HR: 152 bpm | 💓 Max HR: 175 bpm
+```
+
+Or ask for a compact table view with `compact: true`:
+
+```
+## 📋 Activities (5)
+
+| # | Date   | Type | Name            | Distance | Time    | Elevation | HR  |
+|---|--------|------|-----------------|----------|---------|-----------|-----|
+| 1 | Mar 10 | 🚴   | Morning Commute | 5.5mi    | 0:27:34 | 245 ft    | 145 |
+| 2 | Mar 9  | 🏃   | Evening Run     | 3.2mi    | 0:28:45 | 125 ft    | 152 |
+| 3 | Mar 8  | 🏊   | Pool Swim       | 1500yd   | 0:32:10 | N/A       | 128 |
+```
+
+Use `query_vault` to get aggregated stats from your cached data without hitting the API:
+
+```
+## 🔍 Vault Query Results
+
+Filter: type=Ride, after 2026-01-01
+Total Activities: 24
+
+📏 Distance: 342.5 mi | ⏱️ Time: 28.4 hours | ⛰️ Elevation: 12,450 ft
+```
 
 ## Prerequisites
 
