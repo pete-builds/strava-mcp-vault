@@ -56,7 +56,7 @@ This is the hardest part, and Strava's docs don't make it easy. Here's what actu
 
 ### Set your callback domain
 
-When creating your Strava API app, Strava requires a real domain for the "Authorization Callback Domain." Localhost won't work. Use whatever domain you own (your personal site, anything). It doesn't need to run a web server.
+When creating your Strava API app, Strava requires a real domain for the "Authorization Callback Domain." Localhost won't work. Use any domain you own, even if it has nothing to do with this project. A personal site, a business site, anything. It doesn't need to run a web server or have any special endpoint set up. You're only using it as a redirect target so you can grab the authorization code from the URL (explained below).
 
 ### Build the authorization URL
 
@@ -68,7 +68,17 @@ https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=htt
 
 ### Authorize and grab the code
 
-Open that URL in your browser. Authorize the app. Strava redirects to your callback domain. The page will probably 404 or show your unrelated website. That's fine. Look at the URL bar: it contains `?code=XXXXXXXXXX`. Copy that code.
+Open that URL in your browser. Authorize the app. Strava will redirect to your callback domain.
+
+**Here's the trick:** The redirect page will 404 (or show your unrelated website). This is expected and totally fine. You don't need a working web server at that domain. The only thing you need is the **authorization code in your browser's address bar**.
+
+After the redirect, your browser URL will look something like:
+
+```
+https://yourdomain.com/?state=&code=abc123def456ghi789&scope=read,activity:read_all
+```
+
+Copy the value between `code=` and `&scope` (in this example, `abc123def456ghi789`). That's your one-time authorization code for the next step.
 
 ### Exchange the code for tokens
 
@@ -96,7 +106,17 @@ The server starts on port 18201 by default. Change it with `STRAVA_MCP_PORT` in 
 
 ## Connecting to Claude Code
 
-Add to your MCP config:
+Once the container is running, you need to register it as an MCP server so Claude Code can use the tools. The SSE endpoint is `http://YOUR_SERVER_IP:18201/sse`.
+
+**Which IP to use:** Use the IP of the machine running the Docker container, not `localhost` (unless Claude Code runs on the same machine). If you're on a Tailscale network, use the Tailscale IP. If running everything on one machine, `localhost` or `127.0.0.1` works.
+
+Via CLI (recommended):
+
+```bash
+claude mcp add strava --transport sse --url http://YOUR_SERVER_IP:18201/sse
+```
+
+Or add it to your MCP config JSON manually:
 
 ```json
 {
@@ -109,11 +129,7 @@ Add to your MCP config:
 }
 ```
 
-Or via CLI:
-
-```bash
-claude mcp add strava --transport sse --url http://YOUR_SERVER_IP:18201/sse
-```
+**Verify it works:** Restart Claude Code and ask something like "What are my recent Strava activities?" If the MCP connection is healthy, Claude will call the `get_recent_activities` tool and return your data. You can also run `get_cache_stats` to confirm the server is responding.
 
 ## Cache Behavior
 
