@@ -19,6 +19,7 @@ from formatters import (
     format_cache_stats,
     format_sync_result,
     format_vault_query,
+    format_delete_activities,
 )
 
 load_dotenv()
@@ -194,6 +195,20 @@ async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     stats = await manager.get_cache_stats()
     return format_cache_stats(stats)
+
+
+@mcp.tool()
+async def delete_vault_activity(activity_ids: list[int]) -> str:
+    """Delete one or more activities from the local vault by Strava activity ID.
+
+    This only removes activities from the local database — it does not delete
+    them from Strava. Useful for removing duplicates or unwanted entries.
+
+    Args:
+        activity_ids: List of Strava activity IDs to delete (e.g. [12345, 67890]).
+    """
+    deleted = await manager.db.delete_activities(activity_ids)
+    return format_delete_activities(deleted, activity_ids)
 
 
 @mcp.tool()
