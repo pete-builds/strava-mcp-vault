@@ -96,6 +96,8 @@ The server starts on port 18201 by default. Change it with `STRAVA_MCP_PORT` in 
 
 ## Connecting to Claude Code
 
+SUGGEST ADDING INSTRUCTI)NS ON WHICH IP TO GET AND HOW TO GET IT.  ADD URL FOR APP HOME TO STARTUP.
+
 Add to your MCP config:
 
 ```json
