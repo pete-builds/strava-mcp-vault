@@ -322,6 +322,9 @@ class CacheDB:
 
     async def delete_activities(self, activity_ids: list[int]) -> int:
         """Delete activities from the vault by ID. Returns number of rows deleted."""
+        if not activity_ids:
+            return 0
+
         placeholders = ",".join("?" * len(activity_ids))
         cursor = await self._db.execute(
             f"DELETE FROM activities WHERE id IN ({placeholders})",

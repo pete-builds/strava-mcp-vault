@@ -926,6 +926,9 @@ def format_vault_query(result: dict) -> str:
 
 
 def format_delete_activities(deleted: int, requested_ids: list[int]) -> str:
+    if not requested_ids:
+        return "## 🗑️ Delete Activities\n\n- No IDs provided."
+
     not_found = len(requested_ids) - deleted
     lines = [f"## 🗑️ Delete Activities\n"]
     lines.append(f"- **✅ Deleted:** {deleted}")

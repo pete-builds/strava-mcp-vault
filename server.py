@@ -207,6 +207,9 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
     Args:
         activity_ids: List of Strava activity IDs to delete (e.g. [12345, 67890]).
     """
+    if not activity_ids:
+        return "No activity IDs provided. Pass one or more IDs, e.g. [12345]."
+
     deleted = await manager.db.delete_activities(activity_ids)
     return format_delete_activities(deleted, activity_ids)
 
