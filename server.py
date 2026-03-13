@@ -191,6 +191,15 @@ async def get_athlete_stats() -> str:
         return str(e)
 
 
+
+
+def _validate_radius_miles(radius_miles: float) -> str | None:
+    if radius_miles <= 0:
+        return "radius_miles must be greater than 0."
+    if radius_miles > 250:
+        return "radius_miles is too large. Use 250 miles or less."
+    return None
+
 @mcp.tool()
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
@@ -218,6 +227,14 @@ async def get_activities_near(
         after: Only activities on or after this date (ISO format, e.g. "2025-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-01-01").
     """
+    location = (location or "").strip()
+    if not location:
+        return "Location is required. Example: 'Syracuse, NY'."
+
+    radius_error = _validate_radius_miles(radius_miles)
+    if radius_error:
+        return radius_error
+
     coords = await forward_geocode(location)
     if coords is None:
         return f"Could not geocode '{location}'. Try a more specific place name."
