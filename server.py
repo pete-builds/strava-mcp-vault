@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from cache.db import CacheDB
+from cache.geocode import forward_geocode, reverse_geocode_many
 from cache.manager import CacheManager
 from clients.strava import StravaClient, RateLimitError
 from formatters import (
@@ -19,6 +20,7 @@ from formatters import (
     format_cache_stats,
     format_sync_result,
     format_vault_query,
+    format_activities_near,
     format_delete_activities,
 )
 
@@ -190,11 +192,91 @@ async def get_athlete_stats() -> str:
         return str(e)
 
 
+
+
+def _validate_radius_miles(radius_miles: float) -> str | None:
+    if radius_miles <= 0:
+        return "radius_miles must be greater than 0."
+    if radius_miles > 250:
+        return "radius_miles is too large. Use 250 miles or less."
+    return None
+
 @mcp.tool()
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     stats = await manager.get_cache_stats()
     return format_cache_stats(stats)
+
+
+@mcp.tool()
+async def get_activities_near(
+    location: str,
+    radius_miles: float = 20.0,
+    sport_type: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+) -> str:
+    """Find vault activities that started near a given location.
+
+    Geocodes the location name, then searches the local vault for activities
+    that started within the specified radius. No Strava API calls are made.
+
+    Args:
+        location: Place name to search near (e.g. "Syracuse, NY", "Central Park").
+        radius_miles: Search radius in miles (default 20).
+        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
+        after: Only activities on or after this date (ISO format, e.g. "2025-01-01").
+        before: Only activities before this date (ISO format, e.g. "2026-01-01").
+    """
+    location = (location or "").strip()
+    if not location:
+        return "Location is required. Example: 'Syracuse, NY'."
+
+    radius_error = _validate_radius_miles(radius_miles)
+    if radius_error:
+        return radius_error
+
+    coords = await forward_geocode(location)
+    if coords is None:
+        return f"Could not geocode '{location}'. Try a more specific place name."
+    lat, lon = coords
+    results = await manager.db.get_activities_near_location(
+        lat, lon, radius_miles=radius_miles,
+        sport_type=sport_type, after=after, before=before,
+    )
+    if results:
+        activity_coords = [
+            (a["start_latlng"][0], a["start_latlng"][1])
+            for a in results
+            if a.get("start_latlng") and len(a["start_latlng"]) == 2
+        ]
+        location_map = await reverse_geocode_many(activity_coords)
+        for a in results:
+            if a.get("_location_override"):
+                a["_location"] = a["_location_override"]
+            else:
+                coords_key = tuple(a["start_latlng"][:2]) if a.get("start_latlng") else None
+                a["_location"] = location_map.get(coords_key, "") if coords_key else ""
+    return format_activities_near(results, location, radius_miles)
+
+
+@mcp.tool()
+async def set_activity_location(activity_id: int, location: str | None = None) -> str:
+    """Manually set (or clear) the display location for a vault activity.
+
+    Useful for activities recorded indoors or without GPS where no location
+    can be reverse geocoded. Pass location=None to clear an override.
+
+    Args:
+        activity_id: The Strava activity ID to update.
+        location: Location string to display (e.g. "Ithaca, NY"). Pass null to clear.
+    """
+    found = await manager.db.set_location_override(activity_id, location)
+    if not found:
+        return f"Activity {activity_id} not found in vault."
+    if location:
+        return f"✅ Location for activity {activity_id} set to \"{location}\"."
+    return f"✅ Location override cleared for activity {activity_id}."
 
 
 @mcp.tool()

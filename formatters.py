@@ -925,6 +925,35 @@ def format_vault_query(result: dict) -> str:
     return "\n".join(lines)
 
 
+def format_activities_near(
+    activities: list[dict],
+    place: str,
+    radius_miles: float,
+) -> str:
+    if not activities:
+        return f"## 📍 Activities Near {place}\n\nNo activities found within {radius_miles:.0f} miles."
+
+    lines = [f"## 📍 Activities Near {place} ({radius_miles:.0f} mi radius)\n"]
+    lines.append(f"**{len(activities)} activities found**\n")
+    lines.append("| Date | Type | Distance | Time | Location | From Center | Name |")
+    lines.append("|------|------|----------|------|----------|-------------|------|")
+
+    for a in activities:
+        date = (a.get("start_date_local") or "")[:10]
+        sport = a.get("sport_type") or a.get("type") or "?"
+        icon = _sport_icon(sport)
+        dist_mi = a.get("distance", 0) / METERS_PER_MILE
+        t = a.get("moving_time", 0)
+        h, m = divmod(t // 60, 60)
+        time_str = f"{h}:{m:02d}"
+        location = a.get("_location") or "—"
+        near = a.get("_distance_from_query_miles", "?")
+        name = a.get("name") or "—"
+        lines.append(f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |")
+
+    return "\n".join(lines)
+
+
 def format_delete_activities(deleted: int, requested_ids: list[int]) -> str:
     if not requested_ids:
         return "## 🗑️ Delete Activities\n\n- No IDs provided."
