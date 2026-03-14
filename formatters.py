@@ -952,3 +952,16 @@ def format_activities_near(
         lines.append(f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |")
 
     return "\n".join(lines)
+
+
+def format_delete_activities(deleted: int, requested_ids: list[int]) -> str:
+    if not requested_ids:
+        return "## 🗑️ Delete Activities\n\n- No IDs provided."
+
+    not_found = len(requested_ids) - deleted
+    lines = [f"## 🗑️ Delete Activities\n"]
+    lines.append(f"- **✅ Deleted:** {deleted}")
+    if not_found:
+        lines.append(f"- **⚠️ Not found:** {not_found} (already removed or invalid ID)")
+    lines.append(f"- **🏛️ IDs requested:** {', '.join(str(i) for i in requested_ids)}")
+    return "\n".join(lines)

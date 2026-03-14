@@ -21,6 +21,7 @@ from formatters import (
     format_sync_result,
     format_vault_query,
     format_activities_near,
+    format_delete_activities,
 )
 
 load_dotenv()
@@ -276,6 +277,23 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
     if location:
         return f"✅ Location for activity {activity_id} set to \"{location}\"."
     return f"✅ Location override cleared for activity {activity_id}."
+
+
+@mcp.tool()
+async def delete_vault_activity(activity_ids: list[int]) -> str:
+    """Delete one or more activities from the local vault by Strava activity ID.
+
+    This only removes activities from the local database — it does not delete
+    them from Strava. Useful for removing duplicates or unwanted entries.
+
+    Args:
+        activity_ids: List of Strava activity IDs to delete (e.g. [12345, 67890]).
+    """
+    if not activity_ids:
+        return "No activity IDs provided. Pass one or more IDs, e.g. [12345]."
+
+    deleted = await manager.db.delete_activities(activity_ids)
+    return format_delete_activities(deleted, activity_ids)
 
 
 @mcp.tool()
