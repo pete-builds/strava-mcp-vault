@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 from datetime import datetime
@@ -6,6 +7,14 @@ from datetime import datetime
 import aiosqlite
 
 from cache.encryption import encrypt_token, decrypt_token
+
+
+def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 3958.8
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 class CacheDB:
@@ -58,6 +67,21 @@ class CacheDB:
             );
         """)
         await self._db.commit()
+
+        # Migration: add lat/lon and location_override columns if not present
+        for col in ("start_lat REAL", "start_lon REAL", "location_override TEXT"):
+            try:
+                await self._db.execute(f"ALTER TABLE activities ADD COLUMN {col}")
+            except Exception:
+                pass  # already exists
+        await self._db.execute("""
+            UPDATE activities
+            SET start_lat = json_extract(data, '$.start_latlng[0]'),
+                start_lon = json_extract(data, '$.start_latlng[1]')
+            WHERE start_lat IS NULL
+        """)
+        await self._db.commit()
+
         await self.cleanup_expired()
 
     async def get_cached(self, key: str) -> dict | None:
@@ -168,18 +192,29 @@ class CacheDB:
 
     # ── Vault (permanent activity storage) ────────────────────────────
 
+    @staticmethod
+    def _extract_latlng(activity: dict) -> tuple[float | None, float | None]:
+        coords = activity.get("start_latlng") or []
+        if len(coords) == 2:
+            return coords[0], coords[1]
+        return None, None
+
     async def upsert_activity(self, activity: dict):
         """Store or update a single activity in the vault."""
         now = time.time()
+        lat, lon = self._extract_latlng(activity)
         await self._db.execute(
-            "INSERT OR REPLACE INTO activities (id, data, start_date, start_date_local, sport_type, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO activities "
+            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity["id"],
                 json.dumps(activity),
                 activity.get("start_date"),
                 activity.get("start_date_local"),
                 activity.get("sport_type") or activity.get("type"),
+                lat,
+                lon,
                 now,
             ),
         )
@@ -194,13 +229,15 @@ class CacheDB:
                 a.get("start_date"),
                 a.get("start_date_local"),
                 a.get("sport_type") or a.get("type"),
+                *self._extract_latlng(a),
                 now,
             )
             for a in activities
         ]
         await self._db.executemany(
-            "INSERT OR REPLACE INTO activities (id, data, start_date, start_date_local, sport_type, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO activities "
+            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await self._db.commit()
@@ -291,6 +328,64 @@ class CacheDB:
         )
         rows = await cursor.fetchall()
         return [{"sport_type": row[0], "count": row[1]} for row in rows]
+
+    async def get_activities_near_location(
+        self,
+        lat: float,
+        lon: float,
+        radius_miles: float = 20.0,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict]:
+        """Return activities that started within radius_miles of (lat, lon)."""
+        # Bounding box pre-filter in SQL, then precise haversine in Python
+        lat_delta = radius_miles / 69.0
+        lon_delta = radius_miles / (69.0 * math.cos(math.radians(lat)))
+
+        conditions = [
+            "start_lat IS NOT NULL",
+            "start_lat BETWEEN ? AND ?",
+            "start_lon BETWEEN ? AND ?",
+        ]
+        params: list = [lat - lat_delta, lat + lat_delta, lon - lon_delta, lon + lon_delta]
+
+        if sport_type:
+            conditions.append("sport_type = ?")
+            params.append(sport_type)
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        where = f"WHERE {' AND '.join(conditions)}"
+        cursor = await self._db.execute(
+            f"SELECT data, start_lat, start_lon, location_override FROM activities {where} ORDER BY start_date DESC",
+            params,
+        )
+        rows = await cursor.fetchall()
+
+        results = []
+        for data, a_lat, a_lon, loc_override in rows:
+            d = _haversine_miles(a_lat, a_lon, lat, lon)
+            if d <= radius_miles:
+                activity = json.loads(data)
+                activity["_distance_from_query_miles"] = round(d, 1)
+                if loc_override:
+                    activity["_location_override"] = loc_override
+                results.append(activity)
+        return results
+
+    async def set_location_override(self, activity_id: int, location: str | None) -> bool:
+        """Set (or clear) a manual location string for an activity. Returns True if found."""
+        cursor = await self._db.execute(
+            "UPDATE activities SET location_override = ? WHERE id = ?",
+            (location, activity_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_vault_date_range(self) -> dict | None:
         """Return the earliest and latest activity dates in the vault."""
