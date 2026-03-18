@@ -3,28 +3,47 @@
 If MCP_AUTH_TOKEN is set in the environment, all incoming HTTP requests
 must include a matching Authorization: Bearer <token> header. If the
 env var is not set, all requests are allowed (backwards compatible).
+
+Uses a pure ASGI middleware instead of BaseHTTPMiddleware to avoid
+assertion errors with SSE streaming responses.
 """
 
 import logging
 import os
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-
 logger = logging.getLogger(__name__)
 
 
-class BearerAuthMiddleware(BaseHTTPMiddleware):
+class BearerAuthMiddleware:
+    """Pure ASGI middleware for bearer token auth.
+
+    Unlike BaseHTTPMiddleware, this does not wrap the response stream
+    and is fully compatible with SSE long-lived connections.
+    """
+
     def __init__(self, app, token: str):
-        super().__init__(app)
+        self.app = app
         self.token = token
 
-    async def dispatch(self, request, call_next):
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header != f"Bearer {self.token}":
-            logger.warning("Rejected request: invalid or missing auth token")
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_value = headers.get(b"authorization", b"").decode()
+            if auth_value != f"Bearer {self.token}":
+                logger.warning("Rejected request: invalid or missing auth token")
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        [b"content-type", b"application/json"],
+                    ],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"error": "Unauthorized"}',
+                })
+                return
+        await self.app(scope, receive, send)
 
 
 def maybe_add_auth(app):
@@ -37,5 +56,4 @@ def maybe_add_auth(app):
         logger.info("MCP_AUTH_TOKEN not set; endpoint authentication disabled")
         return app
     logger.info("MCP endpoint authentication enabled")
-    app.add_middleware(BearerAuthMiddleware, token=token)
-    return app
+    return BearerAuthMiddleware(app, token=token)
