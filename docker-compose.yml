@@ -16,6 +16,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - strava-net
 
 volumes:
   strava-data:
+
+networks:
+  strava-net:
