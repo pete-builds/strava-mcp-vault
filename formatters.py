@@ -366,7 +366,9 @@ def format_recent_activities_compact(activities: list) -> str:
         avg_hr = a.get("average_heartrate")
         hr_str = f"{int(avg_hr)}" if avg_hr else ""
 
-        lines.append(f"| {i} | {short_date} | {icon} | {name} | {dist_str} | {time_val} | {elev_str} | {hr_str} |")
+        lines.append(
+            f"| {i} | {short_date} | {icon} | {name} | {dist_str} | {time_val} | {elev_str} | {hr_str} |"
+        )
 
     return "\n".join(lines)
 
@@ -643,7 +645,7 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
             lines.append(f"**{stream_type}:** No data")
             continue
 
-        numeric_data = [x for x in data if isinstance(x, (int, float))]
+        numeric_data = [x for x in data if isinstance(x, int | float)]
 
         if numeric_data:
             min_val = min(numeric_data)
@@ -706,9 +708,7 @@ def format_athlete_profile(profile: dict) -> str:
     follower_count = profile.get("follower_count")
     friend_count = profile.get("friend_count")
     if follower_count is not None or friend_count is not None:
-        lines.append(
-            f"- **Followers:** {follower_count or 0} | **Following:** {friend_count or 0}"
-        )
+        lines.append(f"- **Followers:** {follower_count or 0} | **Following:** {friend_count or 0}")
 
     premium = profile.get("premium") or profile.get("summit")
     if premium:
@@ -761,14 +761,10 @@ def format_athlete_stats(stats: dict) -> str:
 
     biggest_ride = stats.get("biggest_ride_distance")
     if biggest_ride:
-        lines.append(
-            f"**🏆 Longest Ride:** {biggest_ride / METERS_PER_MILE:.1f} mi"
-        )
+        lines.append(f"**🏆 Longest Ride:** {biggest_ride / METERS_PER_MILE:.1f} mi")
     biggest_climb = stats.get("biggest_climb_elevation_gain")
     if biggest_climb:
-        lines.append(
-            f"**⛰️ Biggest Climb:** {_format_elevation(biggest_climb)}"
-        )
+        lines.append(f"**⛰️ Biggest Climb:** {_format_elevation(biggest_climb)}")
 
     return "\n".join(lines)
 
@@ -895,7 +891,7 @@ def format_vault_query(result: dict) -> str:
         filter_parts.append(f"before {filters['before']}")
     filter_desc = ", ".join(filter_parts) if filter_parts else "all activities"
 
-    lines = [f"## 🔍 Vault Query Results\n"]
+    lines = ["## 🔍 Vault Query Results\n"]
     lines.append(f"**Filter:** {filter_desc}")
     lines.append(f"**Total Activities:** {total}\n")
 
@@ -931,7 +927,9 @@ def format_activities_near(
     radius_miles: float,
 ) -> str:
     if not activities:
-        return f"## 📍 Activities Near {place}\n\nNo activities found within {radius_miles:.0f} miles."
+        return (
+            f"## 📍 Activities Near {place}\n\nNo activities found within {radius_miles:.0f} miles."
+        )
 
     lines = [f"## 📍 Activities Near {place} ({radius_miles:.0f} mi radius)\n"]
     lines.append(f"**{len(activities)} activities found**\n")
@@ -949,7 +947,9 @@ def format_activities_near(
         location = a.get("_location") or "—"
         near = a.get("_distance_from_query_miles", "?")
         name = a.get("name") or "—"
-        lines.append(f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |")
+        lines.append(
+            f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |"
+        )
 
     return "\n".join(lines)
 
@@ -959,7 +959,7 @@ def format_delete_activities(deleted: int, requested_ids: list[int]) -> str:
         return "## 🗑️ Delete Activities\n\n- No IDs provided."
 
     not_found = len(requested_ids) - deleted
-    lines = [f"## 🗑️ Delete Activities\n"]
+    lines = ["## 🗑️ Delete Activities\n"]
     lines.append(f"- **✅ Deleted:** {deleted}")
     if not_found:
         lines.append(f"- **⚠️ Not found:** {not_found} (already removed or invalid ID)")

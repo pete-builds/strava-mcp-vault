@@ -6,14 +6,17 @@ from datetime import datetime
 
 import aiosqlite
 
-from cache.encryption import encrypt_token, decrypt_token
+from cache.encryption import decrypt_token, encrypt_token
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 3958.8
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -185,9 +188,7 @@ class CacheDB:
         await self._db.commit()
 
     async def cleanup_expired(self):
-        await self._db.execute(
-            "DELETE FROM cache WHERE expires_at < ?", (time.time(),)
-        )
+        await self._db.execute("DELETE FROM cache WHERE expires_at < ?", (time.time(),))
         await self._db.commit()
 
     # ── Vault (permanent activity storage) ────────────────────────────
@@ -402,9 +403,7 @@ class CacheDB:
 
         Used for incremental sync (the 'after' parameter).
         """
-        cursor = await self._db.execute(
-            "SELECT MAX(start_date) FROM activities"
-        )
+        cursor = await self._db.execute("SELECT MAX(start_date) FROM activities")
         row = await cursor.fetchone()
         if row is None or row[0] is None:
             return None

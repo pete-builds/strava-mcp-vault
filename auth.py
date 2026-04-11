@@ -31,17 +31,21 @@ class BearerAuthMiddleware:
             auth_value = headers.get(b"authorization", b"").decode()
             if auth_value != f"Bearer {self.token}":
                 logger.warning("Rejected request: invalid or missing auth token")
-                await send({
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [
-                        [b"content-type", b"application/json"],
-                    ],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": b'{"error": "Unauthorized"}',
-                })
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [
+                            [b"content-type", b"application/json"],
+                        ],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b'{"error": "Unauthorized"}',
+                    }
+                )
                 return
         await self.app(scope, receive, send)
 

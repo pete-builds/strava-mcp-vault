@@ -19,11 +19,11 @@ METERS_PER_MILE = 1609.344
 logger = logging.getLogger(__name__)
 
 TTL = {
-    "activities_list": 3600,       # 1 hour
-    "activity_detail": 86400,      # 24 hours
-    "activity_streams": 604800,    # 7 days
-    "athlete_profile": 86400,      # 24 hours
-    "athlete_stats": 86400,        # 1 day
+    "activities_list": 3600,  # 1 hour
+    "activity_detail": 86400,  # 24 hours
+    "activity_streams": 604800,  # 7 days
+    "athlete_profile": 86400,  # 24 hours
+    "athlete_stats": 86400,  # 1 day
 }
 
 # Fields to extract when shaping activity list responses
@@ -172,10 +172,13 @@ class CacheManager:
         """
         # Get count and breakdown
         total = await self.db.get_vault_activity_count(
-            sport_type=sport_type, after=after, before=before,
+            sport_type=sport_type,
+            after=after,
+            before=before,
         )
         breakdown = await self.db.get_vault_sport_type_summary(
-            after=after, before=before,
+            after=after,
+            before=before,
         )
 
         # If a sport_type filter is active, only include that type in breakdown
@@ -184,7 +187,10 @@ class CacheManager:
 
         # Pull matching activities for aggregate stats
         activities = await self.db.get_vault_activities(
-            limit=1000, sport_type=sport_type, after=after, before=before,
+            limit=1000,
+            sport_type=sport_type,
+            after=after,
+            before=before,
         )
 
         total_distance_m = 0
@@ -341,9 +347,7 @@ class CacheManager:
         logger.info("Sync starting: mode=%s, after=%d", mode, after)
 
         while True:
-            batch = await self.client.get_activities(
-                page=page, per_page=200, after=after
-            )
+            batch = await self.client.get_activities(page=page, per_page=200, after=after)
             api_calls += 1
 
             if not batch:
@@ -384,7 +388,11 @@ class CacheManager:
 
         logger.info(
             "Sync complete: mode=%s, fetched=%d, new=%d, total=%d, api_calls=%d",
-            mode, len(all_activities), new_activities, vault_count_after, api_calls,
+            mode,
+            len(all_activities),
+            new_activities,
+            vault_count_after,
+            api_calls,
         )
 
         return result
