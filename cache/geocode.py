@@ -1,10 +1,13 @@
-"""Nominatim geocoding helpers (forward + reverse — no API key required)."""
+"""Nominatim geocoding helpers (forward + reverse, no API key required)."""
 
 import asyncio
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 _USER_AGENT = "strava-mcp-vault/1.0"
 _BASE = "https://nominatim.openstreetmap.org"
@@ -25,9 +28,13 @@ def _get(url: str) -> dict | list:
 
 
 async def forward_geocode(place: str) -> tuple[float, float] | None:
-    """Resolve a place name to (lat, lon). Returns None if not found."""
+    """Resolve a place name to (lat, lon). Returns None if not found or on error."""
     url = f"{_BASE}/search?q={urllib.parse.quote(place)}&format=json&limit=1"
-    result = await asyncio.to_thread(_get, url)
+    try:
+        result = await asyncio.to_thread(_get, url)
+    except Exception:
+        logger.warning("Geocoding failed for '%s'", place, exc_info=True)
+        return None
     if not result:
         return None
     return float(result[0]["lat"]), float(result[0]["lon"])
@@ -42,13 +49,10 @@ async def reverse_geocode_many(
     activities only trigger one request. Returns a dict mapping each
     original (lat, lon) to a 'City, State' string.
     """
+
     def _city_state(addr: dict) -> str:
         city = (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("village")
-            or addr.get("hamlet")
-            or ""
+            addr.get("city") or addr.get("town") or addr.get("village") or addr.get("hamlet") or ""
         )
         state = addr.get("state", "")
         return f"{city}, {state}" if city else state

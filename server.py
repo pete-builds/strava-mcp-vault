@@ -9,23 +9,28 @@ from mcp.server.fastmcp import FastMCP
 from cache.db import CacheDB
 from cache.geocode import forward_geocode, reverse_geocode_many
 from cache.manager import CacheManager
-from clients.strava import StravaClient, RateLimitError
+from clients.strava import StravaClient
+from exceptions import VaultError
 from formatters import (
-    format_recent_activities,
-    format_recent_activities_compact,
+    format_activities_near,
     format_activity_detail,
     format_activity_streams,
     format_athlete_profile,
     format_athlete_stats,
     format_cache_stats,
+    format_delete_activities,
+    format_recent_activities,
+    format_recent_activities_compact,
     format_sync_result,
     format_vault_query,
-    format_activities_near,
-    format_delete_activities,
 )
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 # Globals initialized in lifespan
@@ -62,9 +67,7 @@ async def _startup():
         access_token = os.getenv("STRAVA_ACCESS_TOKEN")
         refresh_token = os.getenv("STRAVA_REFRESH_TOKEN")
         if not access_token or not refresh_token:
-            logger.error(
-                "First boot: STRAVA_ACCESS_TOKEN and STRAVA_REFRESH_TOKEN required"
-            )
+            logger.error("First boot: STRAVA_ACCESS_TOKEN and STRAVA_REFRESH_TOKEN required")
             sys.exit(1)
         # Set expires_at to 0 to force immediate refresh
         await db.set_tokens(access_token, refresh_token, 0)
@@ -106,13 +109,19 @@ async def get_recent_activities(
     """
     try:
         results = await manager.get_recent_activities(
-            count, sport_type=sport_type, after=after, before=before,
+            count,
+            sport_type=sport_type,
+            after=after,
+            before=before,
         )
         if compact:
             return format_recent_activities_compact(results)
         return format_recent_activities(results)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_recent_activities")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -134,11 +143,16 @@ async def query_vault(
     """
     try:
         result = await manager.query_vault(
-            sport_type=sport_type, after=after, before=before,
+            sport_type=sport_type,
+            after=after,
+            before=before,
         )
         return format_vault_query(result)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in query_vault")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -151,8 +165,11 @@ async def get_activity(activity_id: int) -> str:
     try:
         result = await manager.get_activity(activity_id)
         return format_activity_detail(result)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_activity")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -168,8 +185,11 @@ async def get_activity_streams(
     try:
         result = await manager.get_activity_streams(activity_id, stream_types)
         return format_activity_streams(result, activity_id)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_activity_streams")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -178,8 +198,11 @@ async def get_athlete_profile() -> str:
     try:
         result = await manager.get_athlete_profile()
         return format_athlete_profile(result)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_athlete_profile")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -188,10 +211,11 @@ async def get_athlete_stats() -> str:
     try:
         result = await manager.get_athlete_stats()
         return format_athlete_stats(result)
-    except RateLimitError as e:
-        return str(e)
-
-
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_athlete_stats")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 def _validate_radius_miles(radius_miles: float) -> str | None:
@@ -200,6 +224,7 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
     if radius_miles > 250:
         return "radius_miles is too large. Use 250 miles or less."
     return None
+
 
 @mcp.tool()
 async def get_cache_stats() -> str:
@@ -241,8 +266,12 @@ async def get_activities_near(
         return f"Could not geocode '{location}'. Try a more specific place name."
     lat, lon = coords
     results = await manager.db.get_activities_near_location(
-        lat, lon, radius_miles=radius_miles,
-        sport_type=sport_type, after=after, before=before,
+        lat,
+        lon,
+        radius_miles=radius_miles,
+        sport_type=sport_type,
+        after=after,
+        before=before,
     )
     if results:
         activity_coords = [
@@ -275,7 +304,7 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
     if not found:
         return f"Activity {activity_id} not found in vault."
     if location:
-        return f"✅ Location for activity {activity_id} set to \"{location}\"."
+        return f'✅ Location for activity {activity_id} set to "{location}".'
     return f"✅ Location override cleared for activity {activity_id}."
 
 
@@ -314,12 +343,16 @@ async def sync_activities(days_back: int = 0) -> str:
     try:
         result = await manager.sync_activities(days_back)
         return format_sync_result(result)
-    except RateLimitError as e:
-        return str(e)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in sync_activities")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 if __name__ == "__main__":
     import uvicorn
+
     from auth import maybe_add_auth
 
     app = mcp.sse_app()

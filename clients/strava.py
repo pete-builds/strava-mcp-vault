@@ -5,12 +5,9 @@ import time
 import httpx
 
 from clients.base import BaseClient
+from exceptions import RateLimitError, StravaAPIError
 
 logger = logging.getLogger(__name__)
-
-
-class RateLimitError(Exception):
-    pass
 
 
 class StravaClient(BaseClient):
@@ -119,6 +116,12 @@ class StravaClient(BaseClient):
 
                 resp.raise_for_status()
                 return resp.json()
+            except httpx.HTTPStatusError as e:
+                raise StravaAPIError(
+                    status_code=e.response.status_code,
+                    path=path,
+                    detail=e.response.text[:200],
+                ) from e
             except (httpx.RemoteProtocolError, httpx.ConnectError):
                 if attempt == 0:
                     continue

@@ -27,6 +27,7 @@ def _init():
 
     try:
         from cryptography.fernet import Fernet
+
         _fernet = Fernet(key.encode() if isinstance(key, str) else key)
         logger.info("Token encryption enabled")
     except Exception as e:
