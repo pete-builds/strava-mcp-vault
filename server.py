@@ -569,4 +569,10 @@ if __name__ == "__main__":
     app = mcp.streamable_http_app()
     app = maybe_add_auth(app)
     app = maybe_add_origin_check(app)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Inside Docker, always bind 0.0.0.0 — docker-compose.yml's port
+    # publish already restricts which host interface is reachable (via
+    # MCP_BIND_HOST). Outside Docker (local Python dev), default to
+    # loopback for safety; users can override with MCP_BIND_HOST.
+    in_docker = os.path.exists("/.dockerenv")
+    host = "0.0.0.0" if in_docker else os.getenv("MCP_BIND_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)
