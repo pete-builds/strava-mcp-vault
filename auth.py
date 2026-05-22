@@ -10,6 +10,7 @@ Streamable HTTP (the current MCP transport) and SSE (the deprecated one)
 emit. Pure ASGI middleware is transport-agnostic.
 """
 
+import hmac
 import logging
 import os
 
@@ -26,13 +27,13 @@ class BearerAuthMiddleware:
 
     def __init__(self, app, token: str):
         self.app = app
-        self.token = token
+        self._expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
-            auth_value = headers.get(b"authorization", b"").decode()
-            if auth_value != f"Bearer {self.token}":
+            auth_header = headers.get(b"authorization", b"")
+            if not hmac.compare_digest(auth_header, self._expected):
                 logger.warning("Rejected request: invalid or missing auth token")
                 await send(
                     {
