@@ -71,3 +71,5 @@ Gaps surfaced by the `mcp-builder` best-practices doc.
   Listed under MCP conformance; promoting to a feature because it unlocks lighter-weight access patterns for clients that just want to read static-ish state.
 - **Structured JSON output mode**
   Once `response_format` lands (under MCP conformance), the JSON variants become a feature for downstream agents that want to do their own aggregation / chaining without re-parsing markdown tables.
+- **`sport_type` filter on `strava_get_recent_activities`**
+  Observed 2026-05-22: when asked for "my 5 most recent cycling activities," Claude Desktop attempted to pass a `sport_type` parameter the tool doesn't accept, then fell back to fetching unfiltered and filtering client-side — producing two tool calls and a visible "the filter isn't strict, pulling a wider net" remark in the response. Add a `sport_type` parameter that accepts either a single Strava type (e.g., `"Ride"`) or the category aliases tracked above (e.g., `"rides"` → `_RIDE_TYPES`). Server-side filtering avoids the double-fetch and removes the temptation for LLM clients to invent the parameter.
