@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
@@ -152,7 +153,7 @@ async def get_recent_activities(
     after: str | None = None,
     before: str | None = None,
     compact: bool = False,
-    response_format: str = "markdown",
+    response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
     """List recent Strava activities with distance, time, and stats.
 
@@ -206,7 +207,7 @@ async def query_vault(
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
-    response_format: str = "markdown",
+    response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
     """Query the activity vault for counts and totals with optional filters.
 
@@ -243,7 +244,7 @@ async def query_vault(
         "openWorldHint": True,
     },
 )
-async def get_activity(activity_id: int, response_format: str = "markdown") -> str:
+async def get_activity(activity_id: int, response_format: Literal["json", "markdown"] = "markdown") -> str:
     """Get full details for a specific Strava activity.
 
     Args:
@@ -272,7 +273,7 @@ async def get_activity(activity_id: int, response_format: str = "markdown") -> s
 async def get_activity_streams(
     activity_id: int,
     stream_types: str = "heartrate,distance,altitude",
-    response_format: str = "markdown",
+    response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
     """Get time-series data for an activity (heart rate, elevation, etc).
 
@@ -300,7 +301,7 @@ async def get_activity_streams(
         "openWorldHint": True,
     },
 )
-async def get_athlete_profile(response_format: str = "markdown") -> str:
+async def get_athlete_profile(response_format: Literal["json", "markdown"] = "markdown") -> str:
     """Get the authenticated Strava athlete's profile.
 
     Args:
@@ -325,7 +326,7 @@ async def get_athlete_profile(response_format: str = "markdown") -> str:
         "openWorldHint": True,
     },
 )
-async def get_athlete_stats(response_format: str = "markdown") -> str:
+async def get_athlete_stats(response_format: Literal["json", "markdown"] = "markdown") -> str:
     """Get year-to-date and all-time activity statistics.
 
     Args:
@@ -358,7 +359,7 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
         "openWorldHint": False,
     },
 )
-async def get_cache_stats(response_format: str = "markdown") -> str:
+async def get_cache_stats(response_format: Literal["json", "markdown"] = "markdown") -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status.
 
     Args:
@@ -391,7 +392,7 @@ async def get_activities_near(
     before: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    response_format: str = "markdown",
+    response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
     """Find vault activities that started near a given location.
 
