@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -12,19 +13,23 @@ logger = logging.getLogger(__name__)
 _USER_AGENT = "strava-mcp-vault/1.0"
 _BASE = "https://nominatim.openstreetmap.org"
 _last_request_time: float = 0.0
+# Guards _last_request_time. _get runs under asyncio.to_thread, so concurrent
+# reverse-geocode batches can race the read/sleep/write triple without this.
+_request_lock = threading.Lock()
 
 
 def _get(url: str) -> dict | list:
     global _last_request_time
-    # Nominatim requires max 1 request/second
-    elapsed = time.monotonic() - _last_request_time
-    if elapsed < 1.0:
-        time.sleep(1.0 - elapsed)
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=8) as r:
-        result = json.loads(r.read())
-    _last_request_time = time.monotonic()
-    return result
+    with _request_lock:
+        # Nominatim requires max 1 request/second
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            result = json.loads(r.read())
+        _last_request_time = time.monotonic()
+        return result
 
 
 async def forward_geocode(place: str) -> tuple[float, float] | None:
