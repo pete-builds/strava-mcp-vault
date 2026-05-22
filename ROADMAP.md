@@ -25,20 +25,13 @@ Mark items with `[x]` when complete and add a one-line note with the commit SHA 
 
 ### Low severity / nits
 
-- [ ] **Wrong type hint** — `clients/base.py:5`
-  `api_key: str = None` → `str | None = None`. Also: `api_key` is unused (StravaClient never passes it) — consider removing.
-- [ ] **Dead duplicated code** — `clients/base.py:16-26`
-  `BaseClient._get` is shadowed entirely by `StravaClient._get`. Delete it or have Strava reuse it.
-- [ ] **Cache-stats write amplification** — `cache/db.py:99-131`
-  Every cache read issues 2-3 writes. Buffer counters in memory and flush periodically.
-- [ ] **Empty-string location override stored as `""`** — `cache/db.py:382`
-  Docstring says "Pass null to clear" but `set_activity_location("")` stores `""`, not `NULL`. Normalize empty → `NULL` for consistency.
-- [ ] **`cleanup_expired` only runs at startup** — `cache/db.py:88`
-  Long-running containers accumulate expired rows forever. Call it from `get_cache_stats` or on a periodic task.
-- [ ] **No upper bound on `sync_activities(days_back=…)`** — `server.py:329`
-  `days_back=10**9` is accepted. Cap to ~3650 (10 years) and document the limit.
-- [ ] **`forward_geocode` results aren't cached** — `cache/geocode.py:30-40`
-  Reverse geocoding is deduplicated, but every `get_activities_near("Syracuse, NY")` call re-hits Nominatim. Add a small persistent cache (the `geocoding_cache` table mentioned in the explore report may already exist).
+- [x] **Wrong type hint + unused `api_key`** — `clients/base.py:5` — fixed in `15c451f` (parameter removed entirely)
+- [x] **Dead duplicated code** — `clients/base.py:16-26` — fixed in `15c451f` (BaseClient._get removed)
+- [x] **Cache-stats write amplification** — `cache/db.py:99-131` — fixed in `bd77279` (collapsed INSERT-OR-IGNORE + UPDATE into single UPSERT via ON CONFLICT)
+- [x] **Empty-string location override stored as `""`** — `cache/db.py:382` — fixed in `bd77279` (empty normalized to NULL)
+- [x] **`cleanup_expired` only runs at startup** — `cache/db.py:88` — fixed in `bd77279` (also called from `get_stats`)
+- [x] **No upper bound on `sync_activities(days_back=…)`** — `server.py:329` — fixed in `da3f214` (validated to [0, 3650])
+- [x] **`forward_geocode` results aren't cached** — `cache/geocode.py:30-40` — fixed in `da3f214` (in-process dict capped at 1000 entries, caches hits and misses)
 
 ---
 
@@ -46,45 +39,23 @@ Mark items with `[x]` when complete and add a one-line note with the commit SHA 
 
 Gaps surfaced by the `mcp-builder` best-practices doc.
 
-- [ ] **Server name violates Python convention** — `server.py:90`
-  `"strava-vault"` → `"strava_mcp"` (spec: `{service}_mcp`, snake_case).
-- [ ] **No service prefix on tool names** — all 11 `@mcp.tool()` definitions
-  Spec: `{service}_{action}_{resource}` to avoid collisions when multiple MCP servers are loaded together.
-  - `get_recent_activities` → `strava_get_recent_activities`
-  - `query_vault` → `strava_query_vault`
-  - `get_activity` → `strava_get_activity`
-  - `get_activity_streams` → `strava_get_activity_streams`
-  - `get_athlete_profile` → `strava_get_athlete_profile`
-  - `get_athlete_stats` → `strava_get_athlete_stats`
-  - `get_cache_stats` → `strava_get_cache_stats`
-  - `get_activities_near` → `strava_get_activities_near`
-  - `set_activity_location` → `strava_set_activity_location`
-  - `delete_vault_activity` → `strava_delete_vault_activity`
-  - `sync_activities` → `strava_sync_activities`
-- [ ] **Zero tool annotations** — every `@mcp.tool()`
-  Add `title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` so clients can reason about tool safety.
-- [ ] **No Pydantic input models** — all tools take bare params
-  Move to `BaseModel` with `Field(...)` constraints. Replaces ad-hoc validators like `_validate_radius_miles` (`server.py:221`) with declarative constraints (`Field(gt=0, le=250)`). Add ISO-date `field_validator` for `after`/`before`.
-- [ ] **No `response_format: json | markdown` parameter** — all tools return Markdown only
-  Spec requires both. JSON unlocks programmatic chaining; Markdown stays the human-friendly default.
-- [ ] **No pagination on list tools** — `get_recent_activities`, `get_activities_near`, `query_vault`
-  Return `{total, count, offset, items, has_more, next_offset}`. `get_activities_near` currently has no result cap at all.
-- [ ] **No structured output / `outputSchema`** — all tools return plain `str`
-  Use FastMCP TypedDict / Pydantic return types so clients get `structuredContent` instead of having to parse markdown.
-- [ ] **DNS rebinding protection missing** — `server.py:90`
-  Bind `127.0.0.1` for local deployments; validate the `Origin` header on incoming requests. Overlaps with the High-severity bind item.
-- [ ] **MCP SDK pinned old** — `requirements.txt`
-  `mcp[cli]==1.26.0`. Newer SDKs add Context injection, lifespan dicts, structured-content helpers. Bump after compatibility check.
-- [ ] **No `Context` / progress reporting in `sync_activities`** — `server.py:328-350`
-  Sync can take many seconds. Use `ctx.report_progress(...)` so clients can render a progress bar.
-- [ ] **No MCP Resources exposed**
-  Static-ish endpoints like athlete profile and vault summary fit the Resource model (e.g. `strava://athlete/profile`, `strava://vault/summary`). Lower priority — tools work — but it's idiomatic MCP.
-- [ ] **Generic `except Exception` in tool wrappers** — `server.py:122, 153, etc.`
-  Catch `httpx.HTTPStatusError`, `httpx.TimeoutException`, `VaultError` subclasses specifically and map status codes (404 → "check the ID", 429 → "wait before retrying") to actionable messages.
-- [ ] **Errors returned as plain strings, not `isError: true`**
-  Returning `"Error: ..."` looks indistinguishable from a successful response that mentions an error. Raise exceptions (FastMCP sets `isError`) or return the structured error envelope.
-- [ ] **Tool docstrings missing return-schema and "don't use when" guidance**
-  Spec example includes: full JSON schema of the return value (field names, types, units), "Use when…" examples, "Don't use when… use {other_tool} instead", and error string examples.
+- [x] **Server name violates Python convention** — `server.py:90` — fixed in `df5b856` ("strava-vault" → "strava_mcp")
+- [x] **No service prefix on tool names** — all 11 `@mcp.tool()` definitions — fixed in `df5b856` (via `name=` arg; Python function names unchanged so tests still pass)
+- [x] **Zero tool annotations** — every `@mcp.tool()` — fixed in `df5b856` (title + readOnly/destructive/idempotent/openWorld hints on all 11 tools)
+- [x] **No `response_format: json | markdown` parameter** — fixed in `23fce8e` (all 8 read tools accept response_format; default "markdown" preserves existing behavior)
+- [x] **No pagination on list tools** — fixed in `23fce8e` (offset on `get_recent_activities`, limit+offset on `get_activities_near`; JSON envelope returns total/count/offset/items/has_more/next_offset)
+- [x] **DNS rebinding protection missing** — fixed in `1546581` (optional `OriginCheckMiddleware` activated by `MCP_ALLOWED_ORIGINS` env var; bind already moved to 127.0.0.1 in `6e131fe`)
+- [x] **Generic `except Exception` in tool wrappers** — fixed in `d856d50` (centralized `_tool_error` maps RateLimitError, StravaAPIError 404/401/403/429, VaultError to actionable messages)
+- [x] **No `Context` / progress reporting in `sync_activities`** — fixed in `a8b188f` (ctx auto-injected by FastMCP; per-page progress reports threaded through CacheManager.sync_activities)
+
+### Deferred
+
+- [ ] **No Pydantic input models with Field constraints** — current state: manual validation handles semantics correctly (`_validate_radius_miles`, `days_back` range, `limit`/`offset` checks). Adding Annotated[type, Field(...)] would enrich the MCP inputSchema, but the validation behavior is already covered. Worth a follow-up if multiple LLM clients prove confused by the absent schema constraints.
+- [ ] **No structured output / `outputSchema`** — every tool would need a Pydantic/TypedDict return type and the markdown formatters reworked. JSON path now exists via `response_format="json"` which gives most of the value to programmatic callers. Defer the full outputSchema migration unless a downstream client really needs it.
+- [ ] **MCP SDK pinned old (`mcp[cli]==1.26.0`)** — bumping requires testing against the newer FastMCP API (Context invocation shape, lifespan dict, structured-content helpers may differ). Defer until we have a local env to validate against.
+- [ ] **No MCP Resources exposed** — athlete profile and vault summary are natural Resource candidates (`strava://athlete/profile`, `strava://vault/summary`). Lower priority per spec doc — tools work — and this is additive, not corrective.
+- [ ] **Errors returned as plain strings, not `isError: true`** — current `"Error: ..."` envelope is functional and consistent. Raising from tools is more idiomatic MCP but a tool-by-tool migration with client-facing message shape changes. Defer unless we hear of clients having trouble distinguishing errors from happy-path responses that mention errors.
+- [ ] **Tool docstrings missing return-schema and "don't use when" guidance** — tedious; best done iteratively as we observe real LLM misuse. Each tool has a clear summary today, so this is polish rather than correctness.
 
 ---
 
