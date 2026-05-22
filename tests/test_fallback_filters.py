@@ -158,3 +158,97 @@ async def test_fallback_offset_applied_after_filter(
     # 3 rides total; offset=1 skips the first one, count=10 takes the rest.
     results = await cache_manager.get_recent_activities(count=10, offset=1, sport_type="rides")
     assert len(results) == 2
+
+
+# ── Empty-vault UX: server tool nudges sync_activities ───────────────
+
+
+async def test_get_recent_activities_appends_fallback_hint_when_vault_empty(
+    mock_strava_client, mixed_api_response, monkeypatch
+):
+    """When the vault is empty, the tool response nudges sync_activities."""
+    from strava_mcp_vault import server
+    from strava_mcp_vault.cache.db import CacheDB
+    from strava_mcp_vault.cache.manager import CacheManager
+
+    db = CacheDB(":memory:")
+    await db.init()
+    mock_strava_client.get_activities.return_value = mixed_api_response
+    mgr = CacheManager(db, mock_strava_client)
+    monkeypatch.setattr(server, "manager", mgr)
+
+    output = await server.get_recent_activities(count=5, sport_type="rides")
+
+    assert "Vault is empty" in output
+    assert "strava_sync_activities" in output
+    await db.close()
+
+
+async def test_get_recent_activities_json_envelope_includes_fallback_flag(
+    mock_strava_client, mixed_api_response, monkeypatch
+):
+    """JSON envelope flags api_fallback so programmatic callers can act on it."""
+    import json
+
+    from strava_mcp_vault import server
+    from strava_mcp_vault.cache.db import CacheDB
+    from strava_mcp_vault.cache.manager import CacheManager
+
+    db = CacheDB(":memory:")
+    await db.init()
+    mock_strava_client.get_activities.return_value = mixed_api_response
+    mgr = CacheManager(db, mock_strava_client)
+    monkeypatch.setattr(server, "manager", mgr)
+
+    output = await server.get_recent_activities(count=3, sport_type="rides", response_format="json")
+    payload = json.loads(output)
+    assert payload["api_fallback"] is True
+    assert "sync_activities" in payload["hint"]
+    await db.close()
+
+
+async def test_get_recent_activities_no_hint_when_vault_populated(
+    mock_strava_client, sample_power_ride, monkeypatch
+):
+    """Hint disappears once vault has activities (normal steady-state)."""
+    from strava_mcp_vault import server
+    from strava_mcp_vault.cache.db import CacheDB
+    from strava_mcp_vault.cache.manager import CacheManager
+
+    db = CacheDB(":memory:")
+    await db.init()
+    await db.upsert_activity(sample_power_ride)
+    mgr = CacheManager(db, mock_strava_client)
+    monkeypatch.setattr(server, "manager", mgr)
+
+    output = await server.get_recent_activities(count=5)
+
+    assert "Vault is empty" not in output
+    assert "strava_sync_activities" not in output
+    await db.close()
+
+
+# ── Empty-vault UX: query_vault returns a clear notice ─────────────
+
+
+async def test_query_vault_returns_empty_vault_notice(cache_manager):
+    """query_vault on an empty vault returns vault_empty flag instead of zeros."""
+    result = await cache_manager.query_vault(sport_type="cycling", after="2026-04-01")
+    assert result["vault_empty"] is True
+
+
+def test_format_vault_query_renders_empty_vault_notice():
+    """The empty-vault result renders an actionable message."""
+    from strava_mcp_vault.formatters import format_vault_query
+
+    output = format_vault_query({"vault_empty": True})
+    assert "Vault is empty" in output
+    assert "strava_sync_activities" in output
+
+
+async def test_query_vault_skips_empty_notice_when_populated(cache_manager, sample_activity):
+    """Once the vault has rows, query_vault returns real aggregates again."""
+    await cache_manager.db.upsert_activity(sample_activity)
+    result = await cache_manager.query_vault()
+    assert "vault_empty" not in result or result.get("vault_empty") is not True
+    assert result["total_activities"] >= 1

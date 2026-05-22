@@ -188,6 +188,12 @@ async def get_recent_activities(
         response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
+        # Detect the fallback path up front so we can nudge the user toward
+        # sync_activities. The manager checks vault count again internally;
+        # one extra count query is cheap and keeps the path detection here
+        # rather than mutating the result shape.
+        on_fallback = (await manager.db.get_vault_activity_count()) == 0
+
         results = await manager.get_recent_activities(
             count,
             offset=offset,
@@ -200,19 +206,34 @@ async def get_recent_activities(
             total = await manager.db.get_vault_activity_count(
                 sport_type=sport_type, after=after, before=before, has_power=has_power
             )
-            return _jsonify(
-                {
-                    "total": total,
-                    "count": len(results),
-                    "offset": offset,
-                    "items": results,
-                    "has_more": offset + len(results) < total,
-                    "next_offset": offset + len(results) if offset + len(results) < total else None,
-                }
-            )
+            envelope = {
+                "total": total,
+                "count": len(results),
+                "offset": offset,
+                "items": results,
+                "has_more": offset + len(results) < total,
+                "next_offset": offset + len(results) if offset + len(results) < total else None,
+            }
+            if on_fallback:
+                envelope["api_fallback"] = True
+                envelope["hint"] = (
+                    "Vault is empty; results were fetched live from the Strava API. "
+                    "Run strava_sync_activities to populate the vault for faster, "
+                    "rate-limit-free queries and to enable query_vault aggregates."
+                )
+            return _jsonify(envelope)
         if compact:
-            return format_recent_activities_compact(results)
-        return format_recent_activities(results)
+            body = format_recent_activities_compact(results)
+        else:
+            body = format_recent_activities(results)
+        if on_fallback:
+            body += (
+                "\n\n> 💡 Vault is empty — these results came live from the Strava API. "
+                "Run **`strava_sync_activities`** once to populate your vault. "
+                "Then filtered queries are local + instant, and `query_vault` "
+                "aggregates (total kJ, avg weighted power, etc.) start working."
+            )
+        return body
     except Exception as e:
         return _tool_error("get_recent_activities", e)
 

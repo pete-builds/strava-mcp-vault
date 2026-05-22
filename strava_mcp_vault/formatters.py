@@ -939,6 +939,19 @@ def format_sync_result(result: dict) -> str:
 
 def format_vault_query(result: dict) -> str:
     """Format vault query summary with counts and totals."""
+    if result.get("vault_empty"):
+        return (
+            "## 🔍 Vault Query Results\n\n"
+            "📭 **Vault is empty.** query_vault aggregates from the local SQLite\n"
+            "vault, which hasn't been populated yet.\n\n"
+            "Run **`strava_sync_activities`** to pull your history into the vault.\n"
+            "First run fetches everything (one-time, ~1–3 API calls per 200 activities);\n"
+            "subsequent runs are incremental.\n\n"
+            "After syncing, query_vault returns counts, distance/time/elevation\n"
+            "totals, and power aggregates (kJ, avg weighted power) for any filter\n"
+            "combination — instantly, without burning API budget."
+        )
+
     total = result.get("total_activities", 0)
     breakdown = result.get("breakdown_by_type", [])
     dist_m = result.get("total_distance_meters", 0)

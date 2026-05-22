@@ -248,6 +248,30 @@ class CacheManager:
 
         expanded_sport = expand_sport_type(sport_type)
 
+        # Detect empty vault up front. query_vault has no API fallback (full
+        # aggregation across hundreds of activities would burn rate-limit
+        # budget on every call), so we surface a clear "run sync_activities"
+        # message instead of returning misleading zeros.
+        vault_total = await self.db.get_vault_activity_count()
+        if vault_total == 0:
+            return {
+                "vault_empty": True,
+                "total_activities": 0,
+                "breakdown_by_type": [],
+                "total_distance_meters": 0,
+                "total_moving_time_seconds": 0,
+                "total_elevation_meters": 0,
+                "total_kilojoules": None,
+                "avg_weighted_power": None,
+                "power_rides_count": 0,
+                "filters": {
+                    "sport_type": sport_type,
+                    "after": after,
+                    "before": before,
+                    "has_power": has_power,
+                },
+            }
+
         # Get count and breakdown
         total = await self.db.get_vault_activity_count(
             sport_type=sport_type,

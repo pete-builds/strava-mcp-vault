@@ -46,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the container.
 
 ### Fixed
+- **Empty-vault inconsistency between `get_recent_activities` and
+  `query_vault`.** When the vault was empty, `get_recent_activities` would
+  return live API results while `query_vault` silently reported zero rows —
+  callers chasing the discrepancy assumed a filter bug. Now both tools
+  surface the empty-vault state: `query_vault` returns a clear "vault is
+  empty, run `strava_sync_activities`" message instead of misleading zeros,
+  and `get_recent_activities` appends a one-line nudge to the same effect
+  (plus an `api_fallback` flag + `hint` field on the JSON envelope).
 - **API fallback path now honors every filter.** When the vault is empty,
   `get_recent_activities` used to silently drop `sport_type`, `has_power`,
   `before`, and `after`. `before`/`after` are now converted to epoch and

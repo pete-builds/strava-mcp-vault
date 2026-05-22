@@ -10,18 +10,12 @@ before doing significant work so we can align on scope.
 
 ## Planned
 
-- **Empty-vault UX polish on `get_recent_activities`**
-  When the vault is empty the API fallback now applies filters correctly
-  (commit `9cf5493`), but two loose ends remain:
-  - The JSON envelope's `total` field reports `get_vault_activity_count`
-    (always 0 on the fallback path) instead of the filtered API result
-    count. Cosmetic, but misleading for callers that introspect totals.
-  - The tool should hint at running `strava_sync_activities` when the
-    fallback path is taken — first-time users hit the API on every call
-    today and burn rate-limit budget without knowing the vault is empty.
-    Could be a one-line suffix on the markdown response, an MCP progress
-    notice, or just a README section. The README's Quick Start should
-    also recommend `sync_activities` immediately after first boot.
+- **JSON envelope `total` field on the fallback path**
+  `get_recent_activities(response_format="json")` reports
+  `get_vault_activity_count` (which is 0 when the vault is empty) instead of
+  the filtered API result count. Cosmetic, but misleading for callers that
+  introspect totals. Easy fix once needed: compute total from the post-filter
+  API result on the fallback path.
 - **Persistent `forward_geocode` cache**
   The existing `geocoding_cache` table should be wired into `forward_geocode`
   so repeated `get_activities_near("Syracuse, NY")` calls don't re-hit
