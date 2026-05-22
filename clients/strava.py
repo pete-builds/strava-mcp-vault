@@ -92,8 +92,7 @@ class StravaClient(BaseClient):
         """GET with automatic token refresh, auth header injection, and rate
         limit tracking.
 
-        Retries once on transient connection errors (same pattern as
-        BaseClient).
+        Retries once on transient connection errors.
         """
         await self._ensure_valid_token()
 
