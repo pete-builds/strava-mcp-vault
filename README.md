@@ -119,7 +119,7 @@ Total Activities: 24
    - **Authorization Callback Domain:** A domain you own (e.g., `example.com`). This cannot be `localhost`. It doesn't need to be running a web server or have anything to do with this project. You're only using it as a redirect target to grab an authorization code (explained below).
 3. After creating the app, you'll see your **Client ID** and **Client Secret** on the app settings page. You'll need both for the next steps.
 
-> **⚠️ Don't reuse a `client_id` you're already using elsewhere.** Strava can rotate the `refresh_token` on each refresh call. If two services share one `client_id` and both refresh tokens, they will fight and randomly deauth each other. You **can** create multiple Strava apps under the same account — create a dedicated one for this MCP server.
+> **Heads up: one Strava API app per account.** Strava limits each account to a single API application. If you already use this `client_id` for another service (e.g. your own website), both can share the same Strava app — see [Sharing one Strava app across multiple services](#sharing-one-strava-app-across-multiple-services) below. The original concern that two services would race on refresh-token rotation does not appear to apply in practice — Strava returns a stable `refresh_token` across refresh calls — but you should still expect to re-run OAuth if a refresh ever returns 401.
 
 ### OAuth: Get your access tokens
 
