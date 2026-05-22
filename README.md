@@ -161,6 +161,18 @@ curl -X POST https://www.strava.com/oauth/token \
 
 Copy `access_token` and `refresh_token` from the JSON response into your `.env` file. After first boot, the server manages token refresh automatically in SQLite. You won't need to do this again.
 
+### Sharing one Strava app across multiple services
+
+Strava allows only one API application per account, so if you have an existing service (a coach site, a daily-stats dashboard, etc.) already using your `client_id`, this MCP server has to share it. The pattern that works:
+
+1. **One OAuth dance.** Run the OAuth flow above *once*. The resulting `access_token` and `refresh_token` will work for all consumers.
+2. **Copy the tokens into every service's config.** Same `STRAVA_ACCESS_TOKEN` and `STRAVA_REFRESH_TOKEN` in each service's environment. No central token store needed.
+3. **Let each service refresh independently.** Each one calls `POST https://www.strava.com/oauth/token` when its short-lived access_token expires and caches the new one locally. Strava returns a stable `refresh_token`, so the services don't interfere with each other.
+4. **Watch your shared rate limit.** The 100 req / 15 min and 1,000 req / day quotas are pooled across every consumer of the `client_id`. Heavy usage in one service can starve another.
+5. **If a refresh ever returns 401, re-run OAuth once and update every service.** This shouldn't happen during normal operation. If it does — for example, you clicked "Revoke access" in Strava's settings — repeat the OAuth flow and copy the new tokens into every service's env again.
+
+Strava's webhook subscription is also one-per-app, so if you want push events, only one of your services can receive them; the others will need to poll or proxy.
+
 ## Quick Start
 
 **The fast path — interactive setup script:**
