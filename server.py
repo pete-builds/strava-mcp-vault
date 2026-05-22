@@ -48,6 +48,18 @@ async def _startup():
         logger.error("Missing required env vars: %s", ", ".join(missing))
         sys.exit(1)
 
+    # Refuse to start unauthenticated unless explicitly opted in. The MCP
+    # endpoint exposes private Strava data, so accidentally running without
+    # MCP_AUTH_TOKEN on a routable interface is a foot-gun.
+    if not os.getenv("MCP_AUTH_TOKEN") and not os.getenv("MCP_ALLOW_UNAUTHENTICATED"):
+        logger.error(
+            "Refusing to start without authentication. "
+            "Set MCP_AUTH_TOKEN=<bearer-token> to enable auth, or "
+            "MCP_ALLOW_UNAUTHENTICATED=1 to opt out (only safe behind a "
+            "trusted network like Tailscale or with localhost-only port binding)."
+        )
+        sys.exit(1)
+
     # Init database
     db_path = os.getenv("VAULT_DB_PATH", "/app/data/vault.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)

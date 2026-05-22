@@ -10,7 +10,9 @@ services:
     image: strava-mcp-vault:0.2.0       # explicit version tag, NOT :latest
     container_name: strava-mcp-vault
     ports:
-      - "${MCP_BIND_HOST:-0.0.0.0}:${STRAVA_MCP_PORT:-18201}:18201"
+      # Default to localhost-only. Set MCP_BIND_HOST to a Tailscale or LAN
+      # IP (or 0.0.0.0) when remote access is intended.
+      - "${MCP_BIND_HOST:-127.0.0.1}:${STRAVA_MCP_PORT:-18201}:18201"
     env_file: .env
     restart: unless-stopped
     read_only: true
