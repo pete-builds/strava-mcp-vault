@@ -21,4 +21,4 @@ USER appuser
 
 EXPOSE 18201
 
-CMD ["python", "server.py"]
+CMD ["python", "-m", "strava_mcp_vault.server"]

@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from clients.strava import RateLimitError, StravaClient
+from strava_mcp_vault.clients.strava import RateLimitError, StravaClient
 
 
 @pytest.fixture

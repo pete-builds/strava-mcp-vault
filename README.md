@@ -1,5 +1,10 @@
 # strava-mcp-vault
 
+[![CI](https://github.com/<owner>/strava-mcp-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/strava-mcp-vault/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/<owner>/strava-mcp-vault/branch/main/graph/badge.svg)](https://codecov.io/gh/<owner>/strava-mcp-vault)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An unofficial, custom-built MCP server that lets your AI assistant talk to your Strava data. Connect it to Claude Code (or any MCP-compatible client) and ask questions like "how far did I run this week?" or "show me my ride stats for January." It pulls your activities, stats, and streams from Strava's API and stores everything in a local SQLite vault so you're not hitting the API every time.
 
 This is not affiliated with or endorsed by Strava. It's a personal project built to scratch an itch.
@@ -324,7 +329,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env, set VAULT_DB_PATH=./data/vault.db
-python server.py
+python -m strava_mcp_vault.server
 ```
 
 Requires Python 3.10+ (3.13 used in CI).
@@ -339,6 +344,13 @@ Requires Python 3.10+ (3.13 used in CI).
 
 **Token expired**: The server refreshes tokens automatically before they expire. If refresh fails (revoked app, changed password), re-run the OAuth flow and update your `.env` with fresh tokens.
 
+## Strava attribution
+
+This project consumes data from the Strava API but is not affiliated with, endorsed by, or certified by Strava. Anyone deploying this server — especially in a configuration where its output is shown to other people — is responsible for following Strava's [API Agreement](https://www.strava.com/legal/api) and [Brand Guidelines](https://developers.strava.com/guidelines/), which include rules on attribution ("Powered by Strava"), logo usage, and how Strava data may be displayed.
+
+If you fork this for anything more than personal use, read those documents before you ship.
+
 ## License
 
 MIT
+

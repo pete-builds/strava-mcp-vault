@@ -9,3 +9,4 @@ data/
 coverage.xml
 .pytest_cache/
 .claude/
+docs/superpowers/

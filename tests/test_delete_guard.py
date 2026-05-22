@@ -1,4 +1,4 @@
-from formatters import format_delete_activities
+from strava_mcp_vault.formatters import format_delete_activities
 
 
 def test_formatter_handles_empty_ids():

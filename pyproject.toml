@@ -1,10 +1,65 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strava-mcp-vault"
+version = "0.2.0"
+description = "An MCP server that caches Strava data in a local SQLite vault."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Seth Neal" }]
+keywords = ["mcp", "strava", "sqlite", "cache", "fastmcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp[cli]==1.26.0",
+    "httpx==0.28.1",
+    "aiosqlite==0.22.1",
+    "python-dotenv==1.2.2",
+    "uvicorn==0.41.0",
+    "cryptography==46.0.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.25.3",
+    "pytest-cov>=6.0",
+    "respx==0.22.0",
+    "ruff==0.11.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/<owner>/strava-mcp-vault"
+Repository = "https://github.com/<owner>/strava-mcp-vault"
+Issues = "https://github.com/<owner>/strava-mcp-vault/issues"
+Changelog = "https://github.com/<owner>/strava-mcp-vault/blob/main/CHANGELOG.md"
+
+[project.scripts]
+strava-mcp-vault = "strava_mcp_vault.server:main"
+
+[tool.setuptools.packages.find]
+include = ["strava_mcp_vault*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = "test_*.py"
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
@@ -12,8 +67,8 @@ select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]
 
 [tool.coverage.run]
-source = ["cache", "clients", "formatters", "auth", "server"]
-omit = ["tests/*", "healthcheck.py"]
+source = ["strava_mcp_vault"]
+omit = ["tests/*", "strava_mcp_vault/healthcheck.py"]
 
 [tool.coverage.report]
 fail_under = 70

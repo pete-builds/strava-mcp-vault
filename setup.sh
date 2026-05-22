@@ -50,6 +50,37 @@ echo
 read -rp "  Access token: " access_token
 read -rp "  Refresh token: " refresh_token
 
+echo
+echo "=== Endpoint security ==="
+echo "The MCP endpoint exposes your private Strava data. The server refuses"
+echo "to start unless one of these is set:"
+echo "  - MCP_AUTH_TOKEN          (bearer-token auth — recommended)"
+echo "  - MCP_ALLOW_UNAUTHENTICATED=1  (only safe on 127.0.0.1 or a trusted LAN)"
+echo
+read -rp "Enable bearer-token auth? [Y/n] " auth_yn
+case "${auth_yn:-Y}" in
+  [Nn]*)
+    use_auth=0
+    echo
+    echo "⚠️  Unauthenticated mode selected. Make sure MCP_BIND_HOST stays on"
+    echo "    127.0.0.1 or a trusted private network. Do NOT expose this"
+    echo "    endpoint publicly without setting MCP_AUTH_TOKEN."
+    ;;
+  *)
+    use_auth=1
+    ;;
+esac
+
+# Build the auth section conditionally so the .env reflects the user's choice.
+if [[ "$use_auth" == "1" ]]; then
+  auth_block="# Bearer token for MCP endpoint authentication.
+MCP_AUTH_TOKEN=\"$bearer\""
+else
+  auth_block="# Bearer auth disabled. Only safe when MCP_BIND_HOST is 127.0.0.1
+# or a trusted private network. Set MCP_AUTH_TOKEN to re-enable.
+MCP_ALLOW_UNAUTHENTICATED=1"
+fi
+
 # Write .env. We rebuild it minimally — see .env.example for all options.
 cat > .env <<EOF
 # Strava API credentials (from https://www.strava.com/settings/api)
@@ -61,8 +92,7 @@ STRAVA_CLIENT_SECRET="$client_secret"
 STRAVA_ACCESS_TOKEN="$access_token"
 STRAVA_REFRESH_TOKEN="$refresh_token"
 
-# Bearer token for MCP endpoint authentication.
-MCP_AUTH_TOKEN="$bearer"
+$auth_block
 
 # Encrypts tokens at rest in SQLite. Save this somewhere safe —
 # without it, the encrypted tokens are unrecoverable.
@@ -81,9 +111,11 @@ echo "✅ .env created and chmod 600'd"
 echo
 echo "Save these somewhere safe (e.g. 1Password):"
 echo
-echo "  MCP_AUTH_TOKEN      (use in your client config)"
-echo "    $bearer"
-echo
+if [[ "$use_auth" == "1" ]]; then
+  echo "  MCP_AUTH_TOKEN      (use in your client config)"
+  echo "    $bearer"
+  echo
+fi
 echo "  TOKEN_ENCRYPTION_KEY  (cannot be recovered if lost)"
 echo "    $fernet"
 echo
@@ -91,4 +123,4 @@ echo "Next:"
 echo "  docker compose up -d                 # production (recommended)"
 echo "  # or for local Python dev:"
 echo "  python3 -m venv .venv && source .venv/bin/activate"
-echo "  pip install -r requirements.txt && python server.py"
+echo "  pip install -r requirements.txt && python -m strava_mcp_vault.server"

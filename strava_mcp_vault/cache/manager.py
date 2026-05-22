@@ -154,9 +154,7 @@ class CacheManager:
         # cache-misses fan out to the API.
         gear_ids = list({a["gear_id"] for a in shaped if a.get("gear_id")})
         if gear_ids:
-            names = await asyncio.gather(
-                *(self._resolve_gear_name(gid) for gid in gear_ids)
-            )
+            names = await asyncio.gather(*(self._resolve_gear_name(gid) for gid in gear_ids))
             gear_map = {gid: name for gid, name in zip(gear_ids, names) if name}
             for a in shaped:
                 gid = a.get("gear_id")

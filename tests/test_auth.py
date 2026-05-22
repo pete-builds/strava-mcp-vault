@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock
 
-from auth import BearerAuthMiddleware, maybe_add_auth
+from strava_mcp_vault.auth import BearerAuthMiddleware, maybe_add_auth
 
 # ── maybe_add_auth ─────────────────────────────────────────────────────
 

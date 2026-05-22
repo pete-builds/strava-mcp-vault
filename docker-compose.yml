@@ -7,7 +7,6 @@ x-logging: &default-logging
 services:
   strava-mcp-vault:
     build: .
-    image: strava-mcp-vault:0.2.0       # explicit version tag, NOT :latest
     container_name: strava-mcp-vault
     ports:
       # Default to localhost-only. Set MCP_BIND_HOST to a Tailscale or LAN
@@ -22,7 +21,7 @@ services:
       - strava-data:/app/data
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "python", "healthcheck.py"]
+      test: ["CMD", "python", "-m", "strava_mcp_vault.healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

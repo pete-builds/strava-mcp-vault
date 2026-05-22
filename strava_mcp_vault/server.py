@@ -8,12 +8,12 @@ from typing import Literal
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from cache.db import CacheDB
-from cache.geocode import forward_geocode, reverse_geocode_many
-from cache.manager import CacheManager
-from clients.strava import StravaClient
-from exceptions import RateLimitError, StravaAPIError, VaultError
-from formatters import (
+from strava_mcp_vault.cache.db import CacheDB
+from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
+from strava_mcp_vault.cache.manager import CacheManager
+from strava_mcp_vault.clients.strava import StravaClient
+from strava_mcp_vault.exceptions import RateLimitError, StravaAPIError, VaultError
+from strava_mcp_vault.formatters import (
     format_activities_near,
     format_activity_detail,
     format_activity_streams,
@@ -108,11 +108,7 @@ async def _startup():
 
     # Init database. /app/data is the Docker path; for local runs default
     # to ./data so `python server.py` works out of the box.
-    default_db_path = (
-        "/app/data/vault.db"
-        if os.path.exists("/.dockerenv")
-        else "./data/vault.db"
-    )
+    default_db_path = "/app/data/vault.db" if os.path.exists("/.dockerenv") else "./data/vault.db"
     db_path = os.getenv("VAULT_DB_PATH", default_db_path)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     db = CacheDB(db_path)
@@ -196,14 +192,16 @@ async def get_recent_activities(
             total = await manager.db.get_vault_activity_count(
                 sport_type=sport_type, after=after, before=before
             )
-            return _jsonify({
-                "total": total,
-                "count": len(results),
-                "offset": offset,
-                "items": results,
-                "has_more": offset + len(results) < total,
-                "next_offset": offset + len(results) if offset + len(results) < total else None,
-            })
+            return _jsonify(
+                {
+                    "total": total,
+                    "count": len(results),
+                    "offset": offset,
+                    "items": results,
+                    "has_more": offset + len(results) < total,
+                    "next_offset": offset + len(results) if offset + len(results) < total else None,
+                }
+            )
         if compact:
             return format_recent_activities_compact(results)
         return format_recent_activities(results)
@@ -262,7 +260,9 @@ async def query_vault(
         "openWorldHint": True,
     },
 )
-async def get_activity(activity_id: int, response_format: Literal["json", "markdown"] = "markdown") -> str:
+async def get_activity(
+    activity_id: int, response_format: Literal["json", "markdown"] = "markdown"
+) -> str:
     """Get full details for a specific Strava activity.
 
     Args:
@@ -469,16 +469,18 @@ async def get_activities_near(
                 a["_location"] = location_map.get(coords_key, "") if coords_key else ""
 
     if response_format == "json":
-        return _jsonify({
-            "total": total,
-            "count": len(results),
-            "offset": offset,
-            "items": results,
-            "has_more": offset + len(results) < total,
-            "next_offset": offset + len(results) if offset + len(results) < total else None,
-            "location": location,
-            "radius_miles": radius_miles,
-        })
+        return _jsonify(
+            {
+                "total": total,
+                "count": len(results),
+                "offset": offset,
+                "items": results,
+                "has_more": offset + len(results) < total,
+                "next_offset": offset + len(results) if offset + len(results) < total else None,
+                "location": location,
+                "radius_miles": radius_miles,
+            }
+        )
     return format_activities_near(results, location, radius_miles)
 
 
@@ -575,10 +577,10 @@ async def sync_activities(days_back: int = 0, ctx: Context | None = None) -> str
         return _tool_error("sync_activities", e)
 
 
-if __name__ == "__main__":
+def main() -> None:
     import uvicorn
 
-    from auth import maybe_add_auth, maybe_add_origin_check
+    from strava_mcp_vault.auth import maybe_add_auth, maybe_add_origin_check
 
     # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
     # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
@@ -594,3 +596,7 @@ if __name__ == "__main__":
     in_docker = os.path.exists("/.dockerenv")
     host = "0.0.0.0" if in_docker else os.getenv("MCP_BIND_HOST", "127.0.0.1")
     uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()
