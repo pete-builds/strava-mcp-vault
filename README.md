@@ -9,6 +9,11 @@ An unofficial, custom-built MCP server that lets your AI assistant talk to your 
 
 This is not affiliated with or endorsed by Strava. It's a personal project built to scratch an itch.
 
+<!-- TODO: Replace with a real screenshot or GIF showing Claude asking a question
+     and the tool returning a formatted activity table. Drop the asset into
+     docs/images/ and update the path below. -->
+![Demo placeholder — record a short GIF of Claude using a strava_* tool and save to docs/images/demo.gif](docs/images/demo.gif)
+
 ## What it does
 
 - Connects your AI to Strava through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
@@ -47,19 +52,27 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 
 | Tool | Description | Cache TTL |
 |------|-------------|-----------|
-| `strava_get_recent_activities` | List recent activities with distance, time, HR. Supports `offset` pagination and `compact` table view. | 1 hour (API fallback) |
-| `strava_get_activity` | Full activity detail (segments, splits, gear) | 24 hours |
-| `strava_get_activity_streams` | Time-series data (heart rate, elevation, GPS) | 7 days |
+| `strava_get_recent_activities` | List recent activities with distance, time, HR, and power (when recorded). Supports `sport_type` filter (single type, comma list, or category alias like `"rides"`), `has_power` filter, `offset` pagination, and `compact` table view. | 1 hour (API fallback) |
+| `strava_get_activity` | Full activity detail including a ⚡ Power section for rides with power data (avg, weighted-avg, max, kJ, source) | 24 hours |
+| `strava_get_activity_streams` | Time-series data (heart rate, power, elevation, GPS) | 7 days |
 | `strava_get_athlete_profile` | Authenticated athlete info | 24 hours |
 | `strava_get_athlete_stats` | YTD and all-time totals | 1 day |
 | `strava_get_cache_stats` | Cache hit/miss rates and API rate limit status | — |
-| `strava_get_activities_near` | Find vault activities that started within N miles of a location. Supports `limit`/`offset` pagination. | — |
-| `strava_query_vault` | Filter and aggregate vault activities by date and sport type | — |
+| `strava_get_activities_near` | Find vault activities that started within N miles of a location. Supports the same `sport_type` aliases as `get_recent_activities`, plus `limit`/`offset` pagination. | — |
+| `strava_query_vault` | Filter and aggregate vault activities by date, sport type, and power-data presence. Returns totals for distance, time, elevation, plus work (kJ), avg weighted power, and a power-meter ride count when matching activities recorded power. | — |
 | `strava_set_activity_location` | Manually set (or clear) a display location on a vault activity | — |
 | `strava_delete_vault_activity` | Remove one or more activities from the local vault (does not affect Strava) | — |
 | `strava_sync_activities` | Sync activities into the vault. First run pulls full history; subsequent runs are incremental. | — |
 
 All read tools accept a `response_format` parameter: `"markdown"` (default) for human-readable output or `"json"` for programmatic use.
+
+### Sport-type filter
+
+`sport_type` accepts three forms on `get_recent_activities`, `get_activities_near`, and `query_vault`:
+
+- **A single Strava type:** `"Ride"`, `"GravelRide"`, `"Run"` — matched literally.
+- **A comma-separated list:** `"Ride,GravelRide,MountainBikeRide"`.
+- **A lowercase category alias:** `"rides"` / `"cycling"` (all ride types), `"running"`, `"swims"`, `"walks"`, `"hikes"`, `"snow"`, `"ski"`. Aliases are case-sensitive on the lowercase form — CamelCase always stays literal.
 
 ## Example Output
 
@@ -73,6 +86,7 @@ Ride | Mar 10, 2026 3:45 PM
 
 📏 Distance: 5.50 mi | 🚀 Speed: 12.3 mph | ⏱️ Time: 0:27:34 | ⛰️ Elevation: 245 ft
 ❤️ Avg HR: 145 bpm | 💓 Max HR: 167 bpm | 🔥 Calories: 450
+⚡ Avg: 195 W | NP: 220 W | Work: 1,247 kJ
 
 ### 🏃 Evening Run
 Run | Mar 9, 2026 6:15 PM
@@ -86,11 +100,11 @@ Or ask for a compact table view with `compact: true`:
 ```
 ## 📋 Activities (5)
 
-| # | Date   | Type | Name            | Distance | Time    | Elevation | HR  |
-|---|--------|------|-----------------|----------|---------|-----------|-----|
-| 1 | Mar 10 | 🚴   | Morning Commute | 5.5mi    | 0:27:34 | 245 ft    | 145 |
-| 2 | Mar 9  | 🏃   | Evening Run     | 3.2mi    | 0:28:45 | 125 ft    | 152 |
-| 3 | Mar 8  | 🏊   | Pool Swim       | 1500yd   | 0:32:10 | N/A       | 128 |
+| # | Date   | Type | Name            | Distance | Time    | Elev   | HR  | Avg W | NP  |
+|---|--------|------|-----------------|----------|---------|--------|-----|-------|-----|
+| 1 | Mar 10 | 🚴   | Morning Commute | 5.5mi    | 0:27:34 | 245 ft | 145 | 195   | 220 |
+| 2 | Mar 9  | 🏃   | Evening Run     | 3.2mi    | 0:28:45 | 125 ft | 152 | —     | —   |
+| 3 | Mar 8  | 🏊   | Pool Swim       | 1500yd   | 0:32:10 | N/A    | 128 | —     | —   |
 ```
 
 Use `query_vault` to get aggregated stats from your cached data without hitting the API:
@@ -98,10 +112,16 @@ Use `query_vault` to get aggregated stats from your cached data without hitting 
 ```
 ## 🔍 Vault Query Results
 
-Filter: type=Ride, after 2026-01-01
+Filter: type=rides, after 2026-01-01
 Total Activities: 24
 
 📏 Distance: 342.5 mi | ⏱️ Time: 28.4 hours | ⛰️ Elevation: 12,450 ft
+
+### ⚡ Power
+
+- Power-meter rides: 18
+- Total Work: 22,140 kJ
+- Avg Weighted Power: 212 W
 ```
 
 ## Prerequisites

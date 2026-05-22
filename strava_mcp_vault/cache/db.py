@@ -8,6 +8,22 @@ from datetime import datetime
 import aiosqlite
 
 from strava_mcp_vault.cache.encryption import decrypt_token, encrypt_token
+from strava_mcp_vault.sport_types import expand_sport_type
+
+
+def _sport_type_clause(value: str | None) -> tuple[str, list]:
+    """Build a SQL fragment + params for a sport_type filter.
+
+    Returns ("", []) when no filter applies. Otherwise returns a
+    'sport_type IN (?, ?, ...)' clause with one placeholder per expanded
+    sport type. Aliases like "rides" expand to all ride members; a single
+    type like "Ride" yields a one-element IN clause.
+    """
+    expanded = expand_sport_type(value)
+    if not expanded:
+        return "", []
+    placeholders = ",".join("?" for _ in expanded)
+    return f"sport_type IN ({placeholders})", list(expanded)
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -76,9 +92,20 @@ class CacheDB:
         """)
         await self._db.commit()
 
-        # Migration: add lat/lon and location_override columns if not present.
-        # Tolerate "duplicate column name" — anything else is a real error.
-        for col in ("start_lat REAL", "start_lon REAL", "location_override TEXT"):
+        # Migration: add lat/lon, location_override, and power columns if not
+        # present. Tolerate "duplicate column name" — anything else is a real
+        # error. Power columns are denormalized from the JSON blob to make the
+        # has_power filter and aggregate queries efficient.
+        for col in (
+            "start_lat REAL",
+            "start_lon REAL",
+            "location_override TEXT",
+            "average_watts REAL",
+            "weighted_average_watts REAL",
+            "max_watts REAL",
+            "kilojoules REAL",
+            "device_watts INTEGER",
+        ):
             try:
                 await self._db.execute(f"ALTER TABLE activities ADD COLUMN {col}")
             except sqlite3.OperationalError as e:
@@ -90,6 +117,22 @@ class CacheDB:
                 start_lon = json_extract(data, '$.start_latlng[1]')
             WHERE start_lat IS NULL
         """)
+        # Backfill power columns from JSON blobs for activities synced before
+        # the schema migration. Only touches rows where the column is NULL so
+        # repeated runs are no-ops.
+        await self._db.execute("""
+            UPDATE activities
+            SET average_watts = json_extract(data, '$.average_watts'),
+                weighted_average_watts = json_extract(data, '$.weighted_average_watts'),
+                max_watts = json_extract(data, '$.max_watts'),
+                kilojoules = json_extract(data, '$.kilojoules'),
+                device_watts = json_extract(data, '$.device_watts')
+            WHERE average_watts IS NULL
+              AND json_extract(data, '$.average_watts') IS NOT NULL
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activities_power ON activities(average_watts)"
+        )
         await self._db.commit()
 
         await self.cleanup_expired()
@@ -202,14 +245,37 @@ class CacheDB:
             return coords[0], coords[1]
         return None, None
 
+    @staticmethod
+    def _extract_power(
+        activity: dict,
+    ) -> tuple[float | None, float | None, float | None, float | None, int | None]:
+        """Pull power fields out of an activity dict for column denormalization.
+
+        Returns (average_watts, weighted_average_watts, max_watts, kilojoules,
+        device_watts). device_watts is stored as 1/0/NULL since SQLite has no
+        native bool.
+        """
+        device = activity.get("device_watts")
+        device_int = None if device is None else (1 if device else 0)
+        return (
+            activity.get("average_watts"),
+            activity.get("weighted_average_watts"),
+            activity.get("max_watts"),
+            activity.get("kilojoules"),
+            device_int,
+        )
+
     async def upsert_activity(self, activity: dict):
         """Store or update a single activity in the vault."""
         now = time.time()
         lat, lon = self._extract_latlng(activity)
+        avg_w, wt_avg_w, max_w, kj, dev_w = self._extract_power(activity)
         await self._db.execute(
             "INSERT OR REPLACE INTO activities "
-            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, "
+            "average_watts, weighted_average_watts, max_watts, kilojoules, device_watts, "
+            "synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity["id"],
                 json.dumps(activity),
@@ -218,6 +284,11 @@ class CacheDB:
                 activity.get("sport_type") or activity.get("type"),
                 lat,
                 lon,
+                avg_w,
+                wt_avg_w,
+                max_w,
+                kj,
+                dev_w,
                 now,
             ),
         )
@@ -233,14 +304,17 @@ class CacheDB:
                 a.get("start_date_local"),
                 a.get("sport_type") or a.get("type"),
                 *self._extract_latlng(a),
+                *self._extract_power(a),
                 now,
             )
             for a in activities
         ]
         await self._db.executemany(
             "INSERT OR REPLACE INTO activities "
-            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, "
+            "average_watts, weighted_average_watts, max_watts, kilojoules, device_watts, "
+            "synced_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await self._db.commit()
@@ -252,28 +326,40 @@ class CacheDB:
         sport_type: str | None = None,
         after: str | None = None,
         before: str | None = None,
+        has_power: bool | None = None,
     ) -> list[dict]:
         """Query activities from the vault with optional filters.
 
         Args:
             limit: Max activities to return.
             offset: Skip this many results.
-            sport_type: Filter by Strava sport_type (e.g. "Ride", "Run").
+            sport_type: Filter by Strava sport_type or category alias. Accepts
+                a single type ("Ride"), a comma-separated list ("Ride,Run"),
+                or a category alias ("rides", "running"). See
+                strava_mcp_vault.sport_types for known aliases.
             after: Only activities on or after this ISO date (e.g. "2026-01-01").
             before: Only activities before this ISO date (e.g. "2026-04-01").
+            has_power: If True, only activities that recorded power data.
+                If False, only activities without power data. If None (default),
+                no power filter.
         """
         conditions = []
-        params = []
+        params: list = []
 
-        if sport_type:
-            conditions.append("sport_type = ?")
-            params.append(sport_type)
+        sport_clause, sport_params = _sport_type_clause(sport_type)
+        if sport_clause:
+            conditions.append(sport_clause)
+            params.extend(sport_params)
         if after:
             conditions.append("start_date_local >= ?")
             params.append(after)
         if before:
             conditions.append("start_date_local < ?")
             params.append(before)
+        if has_power is True:
+            conditions.append("average_watts IS NOT NULL")
+        elif has_power is False:
+            conditions.append("average_watts IS NULL")
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT data FROM activities {where} ORDER BY start_date DESC LIMIT ? OFFSET ?"
@@ -288,20 +374,29 @@ class CacheDB:
         sport_type: str | None = None,
         after: str | None = None,
         before: str | None = None,
+        has_power: bool | None = None,
     ) -> int:
-        """Return count of activities in the vault, with optional filters."""
-        conditions = []
-        params = []
+        """Return count of activities in the vault, with optional filters.
 
-        if sport_type:
-            conditions.append("sport_type = ?")
-            params.append(sport_type)
+        See ``get_vault_activities`` for argument semantics.
+        """
+        conditions = []
+        params: list = []
+
+        sport_clause, sport_params = _sport_type_clause(sport_type)
+        if sport_clause:
+            conditions.append(sport_clause)
+            params.extend(sport_params)
         if after:
             conditions.append("start_date_local >= ?")
             params.append(after)
         if before:
             conditions.append("start_date_local < ?")
             params.append(before)
+        if has_power is True:
+            conditions.append("average_watts IS NOT NULL")
+        elif has_power is False:
+            conditions.append("average_watts IS NULL")
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = await self._db.execute(f"SELECT COUNT(*) FROM activities {where}", params)
@@ -353,9 +448,10 @@ class CacheDB:
         ]
         params: list = [lat - lat_delta, lat + lat_delta, lon - lon_delta, lon + lon_delta]
 
-        if sport_type:
-            conditions.append("sport_type = ?")
-            params.append(sport_type)
+        sport_clause, sport_params = _sport_type_clause(sport_type)
+        if sport_clause:
+            conditions.append(sport_clause)
+            params.extend(sport_params)
         if after:
             conditions.append("start_date_local >= ?")
             params.append(after)

@@ -42,6 +42,7 @@ _ACTIVITY_LIST_FIELDS = [
     "max_speed",
     "average_heartrate",
     "max_heartrate",
+    "has_heartrate",
     "calories",
     "gear_id",
     # Location
@@ -52,6 +53,12 @@ _ACTIVITY_LIST_FIELDS = [
     "kudos_count",
     "achievement_count",
     "suffer_score",
+    # Power (only set when activity recorded power data)
+    "average_watts",
+    "weighted_average_watts",
+    "max_watts",
+    "kilojoules",
+    "device_watts",
 ]
 
 
@@ -118,12 +125,13 @@ class CacheManager:
         sport_type: str | None = None,
         after: str | None = None,
         before: str | None = None,
+        has_power: bool | None = None,
     ) -> list:
         """Return a shaped list of recent activities with optional filters.
 
         Local-first: reads from the vault if it has data.
-        Falls back to the API if the vault is empty (offset is ignored in
-        the fallback path; Strava paginates natively if you need it).
+        Falls back to the API if the vault is empty (offset and filters are
+        only enforced on the vault path; the API fallback ignores them).
         """
         vault_count = await self.db.get_vault_activity_count()
 
@@ -134,6 +142,7 @@ class CacheManager:
                 sport_type=sport_type,
                 after=after,
                 before=before,
+                has_power=has_power,
             )
             shaped = [_shape_activity(a) for a in raw_activities]
         else:
@@ -168,25 +177,34 @@ class CacheManager:
         sport_type: str | None = None,
         after: str | None = None,
         before: str | None = None,
+        has_power: bool | None = None,
     ) -> dict:
         """Return a summary of vault activities matching the given filters.
 
-        Returns counts by sport_type, total distance/time, and date range.
+        Returns counts by sport_type, totals for distance/time/elevation, and
+        power aggregates (work + weighted-avg power + count of power-meter
+        rides) when any activities have power data.
         """
+        from strava_mcp_vault.sport_types import expand_sport_type
+
+        expanded_sport = expand_sport_type(sport_type)
+
         # Get count and breakdown
         total = await self.db.get_vault_activity_count(
             sport_type=sport_type,
             after=after,
             before=before,
+            has_power=has_power,
         )
         breakdown = await self.db.get_vault_sport_type_summary(
             after=after,
             before=before,
         )
 
-        # If a sport_type filter is active, only include that type in breakdown
-        if sport_type:
-            breakdown = [b for b in breakdown if b["sport_type"] == sport_type]
+        # If a sport_type filter is active, only include matching types in breakdown
+        if expanded_sport is not None:
+            allowed = set(expanded_sport)
+            breakdown = [b for b in breakdown if b["sport_type"] in allowed]
 
         # Pull matching activities for aggregate stats
         activities = await self.db.get_vault_activities(
@@ -194,15 +212,33 @@ class CacheManager:
             sport_type=sport_type,
             after=after,
             before=before,
+            has_power=has_power,
         )
 
         total_distance_m = 0
         total_moving_time_s = 0
         total_elevation_m = 0
+        total_kilojoules = 0.0
+        weighted_power_samples: list[float] = []
+        power_rides_count = 0
         for a in activities:
             total_distance_m += a.get("distance") or 0
             total_moving_time_s += a.get("moving_time") or 0
             total_elevation_m += a.get("total_elevation_gain") or 0
+            kj = a.get("kilojoules")
+            if kj is not None:
+                total_kilojoules += kj
+            wt = a.get("weighted_average_watts")
+            if wt is not None:
+                weighted_power_samples.append(wt)
+            if a.get("average_watts") is not None:
+                power_rides_count += 1
+
+        avg_weighted_power = (
+            sum(weighted_power_samples) / len(weighted_power_samples)
+            if weighted_power_samples
+            else None
+        )
 
         return {
             "total_activities": total,
@@ -210,10 +246,14 @@ class CacheManager:
             "total_distance_meters": total_distance_m,
             "total_moving_time_seconds": total_moving_time_s,
             "total_elevation_meters": total_elevation_m,
+            "total_kilojoules": total_kilojoules if total_kilojoules > 0 else None,
+            "avg_weighted_power": avg_weighted_power,
+            "power_rides_count": power_rides_count,
             "filters": {
                 "sport_type": sport_type,
                 "after": after,
                 "before": before,
+                "has_power": has_power,
             },
         }
 

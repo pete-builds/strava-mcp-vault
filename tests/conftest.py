@@ -91,6 +91,37 @@ def sample_activity():
 
 
 @pytest.fixture
+def sample_power_ride(sample_activity):
+    """A ride with power-meter data attached."""
+    return {
+        **sample_activity,
+        "id": 100099,
+        "name": "Power Meter Ride",
+        "average_watts": 195.0,
+        "weighted_average_watts": 220.0,
+        "max_watts": 841.0,
+        "kilojoules": 1247.0,
+        "device_watts": True,
+        "has_heartrate": True,
+    }
+
+
+@pytest.fixture
+def sample_estimated_power_ride(sample_activity):
+    """A ride where Strava estimated power from speed/grade (no meter)."""
+    return {
+        **sample_activity,
+        "id": 100098,
+        "name": "Estimated Power Ride",
+        "average_watts": 150.0,
+        "weighted_average_watts": 165.0,
+        "max_watts": 410.0,
+        "kilojoules": 720.0,
+        "device_watts": False,
+    }
+
+
+@pytest.fixture
 def sample_activities_batch(sample_activity):
     """Return a list of 5 diverse activities for batch testing."""
     base = sample_activity

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Power-meter data surfaced across read tools.** `strava_get_activity` now
+  renders an ⚡ Power section with average, weighted-average ("NP"), max,
+  total work (kJ), and source ("Power meter" vs. "Estimated"). Rides with
+  power data in `strava_get_recent_activities` show a power line in card
+  view and `Avg W` + `NP` columns in compact mode. `strava_query_vault`
+  returns `total_kilojoules`, `avg_weighted_power`, and `power_rides_count`
+  when any matching activities recorded power.
+- **`has_power` filter** on `strava_get_recent_activities` and
+  `strava_query_vault`. `true` returns only power-recorded activities;
+  `false` returns only those without.
+- **Sport-type category aliases.** `sport_type` accepts lowercase aliases
+  (`"rides"`, `"running"`, `"cycling"`, `"snow"`, `"walks"`, `"swims"`) that
+  expand to all members of the category, plus comma-separated lists like
+  `"Ride,GravelRide"`. CamelCase Strava types remain literal —
+  `sport_type="Ride"` still matches only `Ride`.
+- New `strava_mcp_vault.sport_types` module with the canonical `RIDE_TYPES`,
+  `RUN_TYPES`, `SNOW_TYPES`, `WALK_TYPES`, `SWIM_TYPES` sets and the
+  `expand_sport_type()` helper.
 - First-time setup script (`setup.sh`) that generates secrets and writes `.env`.
 - Cloudflare Tunnel sidecar via opt-in `docker-compose.override.example.yml` —
   exposes the MCP server at a public HTTPS URL for Claude.ai (web) and Cowork.
@@ -15,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (independent refresh, shared seed token).
 
 ### Changed
+- **Database migration:** `activities` table grows five denormalized columns
+  — `average_watts`, `weighted_average_watts`, `max_watts`, `kilojoules`,
+  `device_watts` — plus an index on `average_watts`. Existing rows are
+  backfilled from the stored JSON blob on the next server start; no re-sync
+  required.
 - 401 responses from Strava are now classified by cause: missing `activity:read_all`
   scope vs. expired/revoked tokens, with actionable recovery guidance per case.
 - Server binds to `127.0.0.1` by default outside Docker; set `MCP_BIND_HOST` to

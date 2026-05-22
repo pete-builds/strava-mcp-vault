@@ -166,6 +166,7 @@ async def get_recent_activities(
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
+    has_power: bool | None = None,
     compact: bool = False,
     response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
@@ -174,9 +175,15 @@ async def get_recent_activities(
     Args:
         count: Number of activities to return (default 10, max 200).
         offset: Skip the first N activities for pagination (default 0).
-        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide", "Snowboard").
+        sport_type: Filter by Strava sport_type or category alias. Accepts a
+            single type ("Ride"), a comma-separated list ("Ride,Run"), or a
+            category alias ("rides", "running", "cycling", "snow",
+            "walks", "swims"). Aliases match case-insensitively.
         after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-04-01").
+        has_power: If true, return only activities that recorded power data
+            (avg watts, kJ, etc.). If false, return only activities without
+            power data. Useful for filtering training-quality rides.
         compact: If true, return a compact one-line-per-activity table instead of full cards.
         response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
@@ -187,10 +194,11 @@ async def get_recent_activities(
             sport_type=sport_type,
             after=after,
             before=before,
+            has_power=has_power,
         )
         if response_format == "json":
             total = await manager.db.get_vault_activity_count(
-                sport_type=sport_type, after=after, before=before
+                sport_type=sport_type, after=after, before=before, has_power=has_power
             )
             return _jsonify(
                 {
@@ -223,18 +231,24 @@ async def query_vault(
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
+    has_power: bool | None = None,
     response_format: Literal["json", "markdown"] = "markdown",
 ) -> str:
     """Query the activity vault for counts and totals with optional filters.
 
-    Returns a summary with total count, distance, time, elevation,
-    and breakdown by activity type. Much lighter than fetching full
-    activity lists. Great for questions like "how many rides this year?"
+    Returns total count, distance, time, elevation, and breakdown by activity
+    type. When any matching activities have power data, also returns total
+    work (kJ), average weighted power, and a count of power-meter rides.
+    Much lighter than fetching full activity lists.
 
     Args:
-        sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
+        sport_type: Filter by Strava sport_type or category alias. Accepts a
+            single type ("Ride"), a comma-separated list ("Ride,Run"), or a
+            category alias ("rides", "running", "cycling", etc.).
         after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-04-01").
+        has_power: If true, only activities that recorded power data.
+            If false, only activities without power data.
         response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
@@ -242,6 +256,7 @@ async def query_vault(
             sport_type=sport_type,
             after=after,
             before=before,
+            has_power=has_power,
         )
         if response_format == "json":
             return _jsonify(result)

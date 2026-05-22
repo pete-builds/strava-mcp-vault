@@ -124,6 +124,33 @@ def _hr(value: float | None) -> str:
     return f"{int(value)} bpm"
 
 
+def _watts(value: float | None) -> str:
+    """Format power as integer watts."""
+    if value is None:
+        return "N/A"
+    return f"{int(round(value))} W"
+
+
+def _kilojoules(value: float | None) -> str:
+    """Format total work in kJ."""
+    if value is None:
+        return "N/A"
+    return f"{int(round(value)):,} kJ"
+
+
+def _power_source(device_watts: bool | int | None) -> str:
+    """Render the power source label.
+
+    Strava sends ``device_watts: true`` when the data came from a real power
+    meter, ``false`` when estimated from speed and grade, and omits the
+    field entirely on activities without power. SQLite roundtrips the bool
+    as 1/0/NULL, so accept both shapes.
+    """
+    if device_watts is None:
+        return "Unknown"
+    return "Power meter" if device_watts else "Estimated"
+
+
 def _sport_icon(sport_type: str | None) -> str:
     """Return an icon for the sport type."""
     icons = {
@@ -307,6 +334,18 @@ def format_recent_activities(activities: list) -> str:
         if hr_parts:
             lines.append(" | ".join(hr_parts))
 
+        # Power row (only when activity recorded power data)
+        avg_w = a.get("average_watts")
+        if avg_w is not None:
+            power_parts = [f"**⚡ Avg:** {_watts(avg_w)}"]
+            wt_avg = a.get("weighted_average_watts")
+            if wt_avg is not None:
+                power_parts.append(f"**NP:** {_watts(wt_avg)}")
+            kj = a.get("kilojoules")
+            if kj is not None:
+                power_parts.append(f"**Work:** {_kilojoules(kj)}")
+            lines.append(" | ".join(power_parts))
+
         # Effort and social metadata row
         meta_parts = []
         suffer = a.get("suffer_score")
@@ -332,13 +371,17 @@ def format_recent_activities(activities: list) -> str:
 
 
 def format_recent_activities_compact(activities: list) -> str:
-    """Format activities as a compact one-line-per-activity table."""
+    """Format activities as a compact one-line-per-activity table.
+
+    Avg W / NP columns are only meaningful for activities with power data;
+    other rows render an em-dash so the table stays aligned.
+    """
     if not activities:
         return "📭 No activities found."
 
     lines = [f"## 📋 Activities ({len(activities)})\n"]
-    lines.append("| # | Date | Type | Name | Distance | Time | Elevation | HR |")
-    lines.append("|---|------|------|------|----------|------|-----------|----|")
+    lines.append("| # | Date | Type | Name | Distance | Time | Elev | HR | Avg W | NP |")
+    lines.append("|---|------|------|------|----------|------|------|----|-------|----|")
 
     for i, a in enumerate(activities, 1):
         sport_type = a.get("sport_type") or a.get("type") or "?"
@@ -366,8 +409,14 @@ def format_recent_activities_compact(activities: list) -> str:
         avg_hr = a.get("average_heartrate")
         hr_str = f"{int(avg_hr)}" if avg_hr else ""
 
+        avg_w = a.get("average_watts")
+        avg_w_str = f"{int(round(avg_w))}" if avg_w is not None else "—"
+        wt_avg = a.get("weighted_average_watts")
+        np_str = f"{int(round(wt_avg))}" if wt_avg is not None else "—"
+
         lines.append(
-            f"| {i} | {short_date} | {icon} | {name} | {dist_str} | {time_val} | {elev_str} | {hr_str} |"
+            f"| {i} | {short_date} | {icon} | {name} | {dist_str} | {time_val} | "
+            f"{elev_str} | {hr_str} | {avg_w_str} | {np_str} |"
         )
 
     return "\n".join(lines)
@@ -571,6 +620,22 @@ def format_activity_detail(activity: dict) -> str:
                 if lap_max_speed:
                     parts.append(f"max {_format_speed_mph(lap_max_speed)}")
                 lines.append(" | ".join(parts))
+
+    # Power (rides with power data — meter or estimated)
+    avg_w = activity.get("average_watts")
+    if avg_w is not None:
+        lines.append("\n### ⚡ Power")
+        lines.append(f"- **Avg Power:** {_watts(avg_w)}")
+        wt_avg = activity.get("weighted_average_watts")
+        if wt_avg is not None:
+            lines.append(f"- **Weighted Avg Power:** {_watts(wt_avg)}")
+        max_w = activity.get("max_watts")
+        if max_w is not None:
+            lines.append(f"- **Max Power:** {_watts(max_w)}")
+        kj = activity.get("kilojoules")
+        if kj is not None:
+            lines.append(f"- **Work:** {_kilojoules(kj)}")
+        lines.append(f"- **Source:** {_power_source(activity.get('device_watts'))}")
 
     # Heart rate (universal)
     avg_hr = activity.get("average_heartrate")
@@ -907,6 +972,19 @@ def format_vault_query(result: dict) -> str:
     lines.append(f"- 📏 **Distance:** {miles:.1f} mi")
     lines.append(f"- ⏱️ **Moving Time:** {hours:.1f} hours")
     lines.append(f"- ⛰️ **Elevation:** {_format_elevation(elev_m)}")
+
+    # Power aggregates — only when matching activities recorded power data
+    total_kj = result.get("total_kilojoules")
+    avg_wt = result.get("avg_weighted_power")
+    power_rides = result.get("power_rides_count", 0)
+    if total_kj or avg_wt or power_rides:
+        lines.append("\n### ⚡ Power\n")
+        if power_rides:
+            lines.append(f"- **Power-meter rides:** {power_rides}")
+        if total_kj:
+            lines.append(f"- **Total Work:** {_kilojoules(total_kj)}")
+        if avg_wt is not None:
+            lines.append(f"- **Avg Weighted Power:** {_watts(avg_wt)}")
 
     # Breakdown by type
     if breakdown:

@@ -10,18 +10,6 @@ before doing significant work so we can align on scope.
 
 ## Planned
 
-- **`sport_type` filter on `strava_get_recent_activities`**
-  Observed 2026-05-22: when asked for "my 5 most recent cycling activities,"
-  Claude Desktop attempted to pass a `sport_type` parameter the tool doesn't
-  accept, then fell back to fetching unfiltered and filtering client-side —
-  producing two tool calls and a visible "the filter isn't strict, pulling a
-  wider net" remark in the response. Add a `sport_type` parameter that accepts
-  either a single Strava type (e.g., `"Ride"`) or one of the category aliases
-  below (e.g., `"rides"` → `_RIDE_TYPES`).
-- **Sport-type category aliases**
-  Accept comma-separated types or category aliases like `"rides"` that map to
-  the `_RIDE_TYPES` set, so callers don't have to enumerate `Ride, GravelRide,
-  MountainBikeRide, VirtualRide, EBikeRide`. Pairs with the filter above.
 - **Persistent `forward_geocode` cache**
   The existing `geocoding_cache` table should be wired into `forward_geocode`
   so repeated `get_activities_near("Syracuse, NY")` calls don't re-hit
