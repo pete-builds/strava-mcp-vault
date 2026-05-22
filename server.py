@@ -481,7 +481,7 @@ async def sync_activities(days_back: int = 0) -> str:
 if __name__ == "__main__":
     import uvicorn
 
-    from auth import maybe_add_auth
+    from auth import maybe_add_auth, maybe_add_origin_check
 
     # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
     # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
@@ -489,4 +489,5 @@ if __name__ == "__main__":
     # stream) on the same path.
     app = mcp.streamable_http_app()
     app = maybe_add_auth(app)
+    app = maybe_add_origin_check(app)
     uvicorn.run(app, host="0.0.0.0", port=port)
