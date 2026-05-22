@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sqlite3
 import time
 from datetime import datetime
 
@@ -27,6 +28,10 @@ class CacheDB:
 
     async def init(self):
         self._db = await aiosqlite.connect(self.db_path)
+        # WAL lets concurrent readers proceed while a writer is active.
+        # synchronous=NORMAL is safe with WAL and avoids fsync per commit.
+        await self._db.execute("PRAGMA journal_mode = WAL")
+        await self._db.execute("PRAGMA synchronous = NORMAL")
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS cache (
                 cache_key TEXT PRIMARY KEY,
@@ -71,12 +76,14 @@ class CacheDB:
         """)
         await self._db.commit()
 
-        # Migration: add lat/lon and location_override columns if not present
+        # Migration: add lat/lon and location_override columns if not present.
+        # Tolerate "duplicate column name" — anything else is a real error.
         for col in ("start_lat REAL", "start_lon REAL", "location_override TEXT"):
             try:
                 await self._db.execute(f"ALTER TABLE activities ADD COLUMN {col}")
-            except Exception:
-                pass  # already exists
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e):
+                    raise
         await self._db.execute("""
             UPDATE activities
             SET start_lat = json_extract(data, '$.start_latlng[0]'),
