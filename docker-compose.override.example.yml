@@ -1,0 +1,34 @@
+# Opt-in: public HTTPS URL for the MCP server via Cloudflare Tunnel.
+#
+# Use this when connecting from Claude.ai (web) or Cowork — they run in
+# the cloud and can't reach 127.0.0.1 or a LAN address.
+#
+# Setup:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   docker compose up -d
+#   docker compose logs cloudflared    # find the https://*.trycloudflare.com URL
+#
+# This uses a Cloudflare "quick tunnel" — the URL is randomly generated
+# and changes every time the container restarts. Fine for testing.
+#
+# For a stable subdomain (recommended for production):
+#   1. Create a named tunnel at https://one.dash.cloudflare.com/
+#      Networks -> Tunnels -> Create a tunnel
+#   2. Copy the tunnel token shown in the install command.
+#   3. Replace the `command:` below with:
+#        cloudflared tunnel --no-autoupdate run --token YOUR_TUNNEL_TOKEN
+#      (or set CLOUDFLARED_TUNNEL_TOKEN in .env and use:
+#        command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TUNNEL_TOKEN})
+#   4. Configure the tunnel to route your subdomain to
+#      http://strava-mcp-vault:18201 in the Cloudflare dashboard.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: strava-mcp-tunnel
+    restart: unless-stopped
+    depends_on:
+      - strava-mcp-vault
+    command: tunnel --no-autoupdate --url http://strava-mcp-vault:18201
+    networks:
+      - strava-net

@@ -101,9 +101,10 @@ Total Activities: 24
 
 ## Prerequisites
 
-- Docker and Docker Compose
 - A Strava account
 - A Strava API application (see below)
+- **Either** Docker + Docker Compose (recommended), **or** Python 3.10+ for local development
+- A way to expose the server publicly if you plan to use it from Claude.ai (web), Cowork, or any client not on the same machine/network as the server. See [Connecting to Claude](#connecting-to-claude) for tunneling options (Cloudflare Tunnel, Tailscale, etc).
 
 ## Setup
 
@@ -117,6 +118,8 @@ Total Activities: 24
    - **Website:** Any URL you own (e.g., `https://example.com`)
    - **Authorization Callback Domain:** A domain you own (e.g., `example.com`). This cannot be `localhost`. It doesn't need to be running a web server or have anything to do with this project. You're only using it as a redirect target to grab an authorization code (explained below).
 3. After creating the app, you'll see your **Client ID** and **Client Secret** on the app settings page. You'll need both for the next steps.
+
+> **⚠️ Don't reuse a `client_id` you're already using elsewhere.** Strava can rotate the `refresh_token` on each refresh call. If two services share one `client_id` and both refresh tokens, they will fight and randomly deauth each other. You **can** create multiple Strava apps under the same account — create a dedicated one for this MCP server.
 
 ### OAuth: Get your access tokens
 
@@ -160,35 +163,114 @@ Copy `access_token` and `refresh_token` from the JSON response into your `.env` 
 
 ## Quick Start
 
+**The fast path — interactive setup script:**
+
+```bash
+git clone https://github.com/sethneal/strava-mcp-vault.git
+cd strava-mcp-vault
+./setup.sh        # generates secrets, prompts for Strava creds, writes .env
+docker compose up -d
+```
+
+`setup.sh` requires Python 3.10+ and will generate `MCP_AUTH_TOKEN` and `TOKEN_ENCRYPTION_KEY` for you, then prompt for your Strava credentials. It prints both generated secrets at the end — save them somewhere safe (the encryption key cannot be recovered if lost).
+
+**Or the manual path:**
+
 ```bash
 git clone https://github.com/sethneal/strava-mcp-vault.git
 cd strava-mcp-vault
 cp .env.example .env
-# Edit .env with your credentials (see Setup above)
+chmod 600 .env  # contains secrets — lock it down
+
+# Generate a bearer token (set as MCP_AUTH_TOKEN in .env):
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Optional: generate a Fernet key for encrypting tokens at rest
+# (set as TOKEN_ENCRYPTION_KEY in .env):
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# Fill in the rest of .env (Strava credentials, etc.) then:
 docker compose up -d
 ```
 
 The server starts on port 18201 by default. Change it with `STRAVA_MCP_PORT` in your `.env`.
 
-## Connecting to Claude Code
+> ⚠️ **Save your `TOKEN_ENCRYPTION_KEY` somewhere safe.** If you lose it, the tokens stored in SQLite are unrecoverable and you'll have to redo the OAuth flow.
 
-Once the container is running, you need to register it as an MCP server so Claude Code can use the tools. The MCP endpoint is `http://YOUR_SERVER_IP:18201/mcp` (Streamable HTTP).
+## Connecting to Claude
 
-**Which IP to use:** Use the IP of the machine running the Docker container, not `localhost` (unless Claude Code runs on the same machine). If you're on a Tailscale network, use the Tailscale IP. If running everything on one machine, `localhost` or `127.0.0.1` works.
+The MCP endpoint is `http://YOUR_SERVER_HOST:18201/mcp` (Streamable HTTP transport). How you wire it up depends on which Claude product you're using.
 
-**Authentication:** If you set `MCP_AUTH_TOKEN` in your `.env` (recommended), you need to pass it as a Bearer token header when registering. If you didn't set one, the server accepts unauthenticated requests.
+| Client | Network requirement | Config |
+| --- | --- | --- |
+| **Claude.ai (web)** | Public HTTPS URL | Custom Connector in the Claude.ai UI |
+| **Cowork** | Public HTTPS URL | MCP server in Cowork settings |
+| **Claude Desktop** (consumer app) | Same machine OR public URL | `claude_desktop_config.json` |
+| **Claude Code** (CLI) | Same machine, LAN, or Tailscale | `claude mcp add` CLI |
 
-Via CLI (recommended):
+> Previously used the HTTP+SSE transport (`/sse` endpoint) which was deprecated in the MCP spec 2025-03-26. Migrated to Streamable HTTP (MCP spec 2025-06-18) in v0.2.0. Existing clients must re-register with the new URL and transport.
+
+### Exposing the server publicly (for Claude.ai and Cowork)
+
+Claude.ai (web) and Cowork run in the cloud — they can't reach `127.0.0.1` or your LAN. You need a public HTTPS URL pointing at the MCP server. Pick one:
+
+- **Cloudflare Tunnel sidecar (easiest)**: this repo ships an opt-in [`docker-compose.override.example.yml`](docker-compose.override.example.yml) that runs `cloudflared` alongside the MCP server. Copy it to `docker-compose.override.yml` and `docker compose up -d` — `docker compose logs cloudflared` will print a public `https://*.trycloudflare.com` URL. See the file's comments for upgrading to a stable named tunnel.
+- **[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)** standalone if you'd rather not use the sidecar. Run `cloudflared tunnel --url http://localhost:18201`.
+- **[Tailscale Funnel](https://tailscale.com/kb/1223/funnel)** (free for personal use). `tailscale funnel 18201` exposes the local port at `https://<machine>.<tailnet>.ts.net`.
+- **A reverse proxy you control** (Caddy, nginx, Traefik) terminating TLS in front of the server.
+
+> ⚠️ **Security:** Your endpoint is now reachable from the internet. **Always set `MCP_AUTH_TOKEN` in `.env`** before exposing it — without auth, anyone who finds the URL gets read/write access to your Strava data and the local vault. The server refuses to start without either a bearer token or an explicit `MCP_ALLOW_UNAUTHENTICATED=1` opt-out.
+
+### From Claude.ai (web)
+
+1. Settings → **Connectors** → **Add custom connector**.
+2. **URL:** your public HTTPS endpoint with `/mcp` (e.g. `https://strava.example.com/mcp`).
+3. **Authentication:** Bearer token. Paste the value of `MCP_AUTH_TOKEN`.
+4. Save. The 11 `strava_*` tools should appear in your tool picker on any new chat.
+
+### From Cowork
+
+1. Open the Cowork workspace settings → **MCP servers** → **Add**.
+2. Use the same public URL + bearer token as the Claude.ai instructions above.
+3. Save and start a session; the tools become available to all agents in that workspace.
+
+### From Claude Desktop (consumer app, macOS/Windows)
+
+Claude Desktop reads `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Most versions need the [`mcp-remote`](https://github.com/geelen/mcp-remote) bridge to talk to HTTP MCP servers:
+
+```json
+{
+  "mcpServers": {
+    "strava": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://127.0.0.1:18201/mcp",
+        "--header",
+        "Authorization:Bearer YOUR_MCP_AUTH_TOKEN"
+      ]
+    }
+  }
+}
+```
+
+Replace `127.0.0.1` with your server's hostname/IP if it's not on the same machine. Restart Claude Desktop after editing. The first call may take ~5s while `npx` downloads `mcp-remote`.
+
+### From Claude Code (CLI)
+
+Use the IP of the machine running the server (or `127.0.0.1` if local). Tailscale IPs work great here.
 
 ```bash
-# With auth token:
-claude mcp add strava http://YOUR_SERVER_IP:18201/mcp --transport http -H "Authorization: Bearer YOUR_MCP_AUTH_TOKEN"
+# With auth token (recommended):
+claude mcp add strava http://YOUR_SERVER_IP:18201/mcp --transport http \
+  -H "Authorization: Bearer YOUR_MCP_AUTH_TOKEN"
 
-# Without auth:
+# Without auth (only safe on a loopback / trusted LAN):
 claude mcp add strava http://YOUR_SERVER_IP:18201/mcp --transport http
 ```
 
-Or add it to your MCP config JSON manually:
+Or edit the MCP config JSON directly:
 
 ```json
 {
@@ -204,9 +286,9 @@ Or add it to your MCP config JSON manually:
 }
 ```
 
-> Previously used the HTTP+SSE transport (`/sse` endpoint) which was deprecated in the MCP spec 2025-03-26. Migrated to Streamable HTTP (MCP spec 2025-06-18) in v0.2.0. Existing clients must re-register with the new URL and transport.
+### Verify it works
 
-**Verify it works:** Restart Claude Code and ask something like "What are my recent Strava activities?" If the MCP connection is healthy, Claude will call the `get_recent_activities` tool and return your data. You can also run `get_cache_stats` to confirm the server is responding.
+After connecting, ask Claude something like *"What are my recent Strava activities?"* If the connection is healthy, Claude will call the `strava_get_recent_activities` tool and return your data. You can also ask Claude to run `strava_get_cache_stats` to confirm the server is responding.
 
 ## Cache Behavior
 
@@ -233,7 +315,7 @@ cp .env.example .env
 python server.py
 ```
 
-Requires Python 3.13+.
+Requires Python 3.10+ (3.13 used in CI).
 
 ## Troubleshooting
 
