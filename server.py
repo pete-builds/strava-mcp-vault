@@ -5,7 +5,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from cache.db import CacheDB
 from cache.geocode import forward_geocode, reverse_geocode_many
@@ -533,7 +533,7 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
         "openWorldHint": True,
     },
 )
-async def sync_activities(days_back: int = 0) -> str:
+async def sync_activities(days_back: int = 0, ctx: Context | None = None) -> str:
     """Sync Strava activities into the local vault.
 
     Smart sync behavior:
@@ -550,7 +550,7 @@ async def sync_activities(days_back: int = 0) -> str:
     if days_back < 0 or days_back > 3650:
         return "days_back must be between 0 and 3650 (10 years)."
     try:
-        result = await manager.sync_activities(days_back)
+        result = await manager.sync_activities(days_back, ctx=ctx)
         return format_sync_result(result)
     except Exception as e:
         return _tool_error("sync_activities", e)

@@ -314,7 +314,7 @@ class CacheManager:
 
         return stats
 
-    async def sync_activities(self, days_back: int = 0) -> dict:
+    async def sync_activities(self, days_back: int = 0, ctx=None) -> dict:
         """Sync activities into the vault.
 
         Behavior:
@@ -361,6 +361,14 @@ class CacheManager:
 
             all_activities.extend(batch)
             logger.info("Sync page %d: got %d activities", page, len(batch))
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(
+                        progress=page,
+                        message=f"page {page}: fetched {len(all_activities)} activities so far",
+                    )
+                except Exception:
+                    pass  # progress reporting is best-effort
             page += 1
 
         # Store in vault (permanent)
