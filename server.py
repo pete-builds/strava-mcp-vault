@@ -10,7 +10,7 @@ from cache.db import CacheDB
 from cache.geocode import forward_geocode, reverse_geocode_many
 from cache.manager import CacheManager
 from clients.strava import StravaClient
-from exceptions import VaultError
+from exceptions import RateLimitError, StravaAPIError, VaultError
 from formatters import (
     format_activities_near,
     format_activity_detail,
@@ -32,6 +32,33 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _tool_error(tool_name: str, e: Exception) -> str:
+    """Map an exception to an actionable error string for MCP clients.
+
+    Specific Strava errors get tailored guidance (rate limit, auth, not found);
+    other VaultErrors stringify directly; anything else logs a traceback and
+    returns the type+message.
+    """
+    if isinstance(e, RateLimitError):
+        return f"Strava rate limit hit. Wait a few minutes before retrying. ({e})"
+    if isinstance(e, StravaAPIError):
+        if e.status_code == 404:
+            return f"Strava API: resource not found. Check the ID. ({e.path})"
+        if e.status_code in (401, 403):
+            return (
+                f"Strava API: unauthorized ({e.path}). The access token may be "
+                "expired or revoked; reseed STRAVA_ACCESS_TOKEN / STRAVA_REFRESH_TOKEN."
+            )
+        if e.status_code == 429:
+            return f"Strava API: rate limited. Wait before retrying. ({e.path})"
+        return f"Strava API error: {e}"
+    if isinstance(e, VaultError):
+        return f"Error: {e}"
+    logger.exception("Unexpected error in %s", tool_name)
+    return f"Unexpected error: {type(e).__name__}: {e}"
+
 
 # Globals initialized in lifespan
 manager: CacheManager | None = None
@@ -138,11 +165,8 @@ async def get_recent_activities(
         if compact:
             return format_recent_activities_compact(results)
         return format_recent_activities(results)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_recent_activities")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_recent_activities", e)
 
 
 @mcp.tool(
@@ -178,11 +202,8 @@ async def query_vault(
             before=before,
         )
         return format_vault_query(result)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in query_vault")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("query_vault", e)
 
 
 @mcp.tool(
@@ -204,11 +225,8 @@ async def get_activity(activity_id: int) -> str:
     try:
         result = await manager.get_activity(activity_id)
         return format_activity_detail(result)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_activity")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_activity", e)
 
 
 @mcp.tool(
@@ -233,11 +251,8 @@ async def get_activity_streams(
     try:
         result = await manager.get_activity_streams(activity_id, stream_types)
         return format_activity_streams(result, activity_id)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_activity_streams")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_activity_streams", e)
 
 
 @mcp.tool(
@@ -255,11 +270,8 @@ async def get_athlete_profile() -> str:
     try:
         result = await manager.get_athlete_profile()
         return format_athlete_profile(result)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_athlete_profile")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_athlete_profile", e)
 
 
 @mcp.tool(
@@ -277,11 +289,8 @@ async def get_athlete_stats() -> str:
     try:
         result = await manager.get_athlete_stats()
         return format_athlete_stats(result)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_athlete_stats")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_athlete_stats", e)
 
 
 def _validate_radius_miles(radius_miles: float) -> str | None:
@@ -307,11 +316,8 @@ async def get_cache_stats() -> str:
     try:
         stats = await manager.get_cache_stats()
         return format_cache_stats(stats)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in get_cache_stats")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("get_cache_stats", e)
 
 
 @mcp.tool(
@@ -406,11 +412,8 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
         if location:
             return f'✅ Location for activity {activity_id} set to "{location}".'
         return f"✅ Location override cleared for activity {activity_id}."
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in set_activity_location")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("set_activity_location", e)
 
 
 @mcp.tool(
@@ -438,11 +441,8 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
     try:
         deleted = await manager.db.delete_activities(activity_ids)
         return format_delete_activities(deleted, activity_ids)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in delete_vault_activity")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("delete_vault_activity", e)
 
 
 @mcp.tool(
@@ -474,11 +474,8 @@ async def sync_activities(days_back: int = 0) -> str:
     try:
         result = await manager.sync_activities(days_back)
         return format_sync_result(result)
-    except VaultError as e:
-        return f"Error: {e}"
     except Exception as e:
-        logger.exception("Unexpected error in sync_activities")
-        return f"Unexpected error: {type(e).__name__}: {e}"
+        return _tool_error("sync_activities", e)
 
 
 if __name__ == "__main__":
