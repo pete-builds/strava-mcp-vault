@@ -99,10 +99,19 @@ async def lifespan(server):
 
 
 port = int(os.getenv("STRAVA_MCP_PORT", "18201"))
-mcp = FastMCP("strava-vault", host="0.0.0.0", port=port, lifespan=lifespan)
+mcp = FastMCP("strava_mcp", host="0.0.0.0", port=port, lifespan=lifespan)
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_recent_activities",
+    annotations={
+        "title": "List recent Strava activities",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_recent_activities(
     count: int = 10,
     sport_type: str | None = None,
@@ -136,7 +145,16 @@ async def get_recent_activities(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_query_vault",
+    annotations={
+        "title": "Summarize vault activities",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def query_vault(
     sport_type: str | None = None,
     after: str | None = None,
@@ -167,7 +185,16 @@ async def query_vault(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_activity",
+    annotations={
+        "title": "Get full Strava activity detail",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_activity(activity_id: int) -> str:
     """Get full details for a specific Strava activity.
 
@@ -184,7 +211,16 @@ async def get_activity(activity_id: int) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_activity_streams",
+    annotations={
+        "title": "Get activity time-series streams",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_activity_streams(
     activity_id: int, stream_types: str = "heartrate,distance,altitude"
 ) -> str:
@@ -204,7 +240,16 @@ async def get_activity_streams(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_athlete_profile",
+    annotations={
+        "title": "Get authenticated athlete profile",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_athlete_profile() -> str:
     """Get the authenticated Strava athlete's profile."""
     try:
@@ -217,7 +262,16 @@ async def get_athlete_profile() -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_athlete_stats",
+    annotations={
+        "title": "Get athlete YTD and all-time stats",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_athlete_stats() -> str:
     """Get year-to-date and all-time activity statistics."""
     try:
@@ -238,7 +292,16 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
     return None
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_cache_stats",
+    annotations={
+        "title": "Show cache and rate-limit stats",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     try:
@@ -251,7 +314,16 @@ async def get_cache_stats() -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_get_activities_near",
+    annotations={
+        "title": "Find vault activities near a location",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
 async def get_activities_near(
     location: str,
     radius_miles: float = 20.0,
@@ -307,7 +379,16 @@ async def get_activities_near(
     return format_activities_near(results, location, radius_miles)
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_set_activity_location",
+    annotations={
+        "title": "Set or clear display location for a vault activity",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def set_activity_location(activity_id: int, location: str | None = None) -> str:
     """Manually set (or clear) the display location for a vault activity.
 
@@ -332,7 +413,16 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_delete_vault_activity",
+    annotations={
+        "title": "Delete activities from local vault",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def delete_vault_activity(activity_ids: list[int]) -> str:
     """Delete one or more activities from the local vault by Strava activity ID.
 
@@ -355,7 +445,16 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    name="strava_sync_activities",
+    annotations={
+        "title": "Sync Strava activities into local vault",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
 async def sync_activities(days_back: int = 0) -> str:
     """Sync Strava activities into the local vault.
 
