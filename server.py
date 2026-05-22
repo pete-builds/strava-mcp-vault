@@ -94,8 +94,14 @@ async def _startup():
         )
         sys.exit(1)
 
-    # Init database
-    db_path = os.getenv("VAULT_DB_PATH", "/app/data/vault.db")
+    # Init database. /app/data is the Docker path; for local runs default
+    # to ./data so `python server.py` works out of the box.
+    default_db_path = (
+        "/app/data/vault.db"
+        if os.path.exists("/.dockerenv")
+        else "./data/vault.db"
+    )
+    db_path = os.getenv("VAULT_DB_PATH", default_db_path)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     db = CacheDB(db_path)
     await db.init()
