@@ -44,13 +44,32 @@ def encrypt_token(plaintext: str) -> str:
 
 
 def decrypt_token(stored: str) -> str:
-    """Decrypt a token string. Returns the input unchanged if encryption is not configured."""
+    """Decrypt a token string. Returns the input unchanged if encryption is not configured.
+
+    Raises cryptography.fernet.InvalidToken if the stored value looks like
+    Fernet ciphertext but cannot be decrypted (e.g. TOKEN_ENCRYPTION_KEY was
+    rotated). Values that do not look like Fernet ciphertext are assumed to
+    be pre-encryption plaintext and returned as-is — supports the one-time
+    migration when encryption is enabled on an existing deployment.
+    """
     _init()
     if _fernet is None:
         return stored
+
+    # Fernet ciphertext is URL-safe base64 starting with the version byte 0x80,
+    # which encodes to "gAAAAA". If the stored value doesn't look like Fernet,
+    # it predates encryption being turned on.
+    if not stored.startswith("gAAAAA"):
+        logger.info("Token stored as plaintext; will be re-encrypted on next refresh")
+        return stored
+
+    from cryptography.fernet import InvalidToken
+
     try:
         return _fernet.decrypt(stored.encode()).decode()
-    except Exception:
-        # Token may have been stored before encryption was enabled
-        logger.debug("Token decryption failed; returning as plaintext (pre-encryption data)")
-        return stored
+    except InvalidToken:
+        logger.error(
+            "Token decryption failed. TOKEN_ENCRYPTION_KEY may have been rotated. "
+            "Re-seed tokens via STRAVA_ACCESS_TOKEN / STRAVA_REFRESH_TOKEN env vars."
+        )
+        raise

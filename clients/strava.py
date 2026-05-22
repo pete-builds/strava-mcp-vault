@@ -28,10 +28,14 @@ class StravaClient(BaseClient):
     async def init_tokens(self):
         """Load tokens from cache_db.
 
-        If None is returned, this is the first boot and the caller must seed
-        tokens from environment variables.
+        If None is returned (or stored tokens are unreadable), this is treated
+        as first boot and the caller must seed tokens from environment variables.
         """
-        tokens = await self._cache_db.get_tokens()
+        try:
+            tokens = await self._cache_db.get_tokens()
+        except Exception as e:
+            logger.error("Stored tokens unreadable (%s); falling back to env-var seed", e)
+            return
         if tokens is None:
             logger.info("No cached tokens found; caller must seed from env vars")
             return
