@@ -241,8 +241,14 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
 @mcp.tool()
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
-    stats = await manager.get_cache_stats()
-    return format_cache_stats(stats)
+    try:
+        stats = await manager.get_cache_stats()
+        return format_cache_stats(stats)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_cache_stats")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -312,12 +318,18 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
         activity_id: The Strava activity ID to update.
         location: Location string to display (e.g. "Ithaca, NY"). Pass null to clear.
     """
-    found = await manager.db.set_location_override(activity_id, location)
-    if not found:
-        return f"Activity {activity_id} not found in vault."
-    if location:
-        return f'✅ Location for activity {activity_id} set to "{location}".'
-    return f"✅ Location override cleared for activity {activity_id}."
+    try:
+        found = await manager.db.set_location_override(activity_id, location)
+        if not found:
+            return f"Activity {activity_id} not found in vault."
+        if location:
+            return f'✅ Location for activity {activity_id} set to "{location}".'
+        return f"✅ Location override cleared for activity {activity_id}."
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in set_activity_location")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
@@ -333,8 +345,14 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
     if not activity_ids:
         return "No activity IDs provided. Pass one or more IDs, e.g. [12345]."
 
-    deleted = await manager.db.delete_activities(activity_ids)
-    return format_delete_activities(deleted, activity_ids)
+    try:
+        deleted = await manager.db.delete_activities(activity_ids)
+        return format_delete_activities(deleted, activity_ids)
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in delete_vault_activity")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool()
