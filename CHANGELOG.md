@@ -46,14 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the container.
 
 ### Fixed
-- **Empty-vault inconsistency between `get_recent_activities` and
-  `query_vault`.** When the vault was empty, `get_recent_activities` would
-  return live API results while `query_vault` silently reported zero rows —
-  callers chasing the discrepancy assumed a filter bug. Now both tools
-  surface the empty-vault state: `query_vault` returns a clear "vault is
-  empty, run `strava_sync_activities`" message instead of misleading zeros,
-  and `get_recent_activities` appends a one-line nudge to the same effect
-  (plus an `api_fallback` flag + `hint` field on the JSON envelope).
+- **`query_vault` and `get_recent_activities` now use the same data source.**
+  When the vault was empty, `get_recent_activities` returned live API
+  results while `query_vault` silently reported zero rows — callers asking
+  the same question with the same filters got wildly different answers
+  ("16 rides via the list tool, 0 via the aggregate tool"). Both tools now
+  share a single `_fetch_api_filtered` helper: when the vault has data they
+  use it; when it's empty they fall back to the Strava API with identical
+  filter semantics (`before`/`after` passed natively, `sport_type` +
+  `has_power` applied client-side). The API fallback is capped at Strava's
+  per-page limit of 200 activities; when the page is full, `query_vault`
+  sets a `truncated` flag and the markdown output flags incomplete totals.
+  Result: same input → same answer regardless of vault state, no user
+  action required.
 - **API fallback path now honors every filter.** When the vault is empty,
   `get_recent_activities` used to silently drop `sport_type`, `has_power`,
   `before`, and `after`. `before`/`after` are now converted to epoch and

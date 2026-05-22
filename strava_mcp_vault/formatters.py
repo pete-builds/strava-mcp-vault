@@ -939,25 +939,13 @@ def format_sync_result(result: dict) -> str:
 
 def format_vault_query(result: dict) -> str:
     """Format vault query summary with counts and totals."""
-    if result.get("vault_empty"):
-        return (
-            "## 🔍 Vault Query Results\n\n"
-            "📭 **Vault is empty.** query_vault aggregates from the local SQLite\n"
-            "vault, which hasn't been populated yet.\n\n"
-            "Run **`strava_sync_activities`** to pull your history into the vault.\n"
-            "First run fetches everything (one-time, ~1–3 API calls per 200 activities);\n"
-            "subsequent runs are incremental.\n\n"
-            "After syncing, query_vault returns counts, distance/time/elevation\n"
-            "totals, and power aggregates (kJ, avg weighted power) for any filter\n"
-            "combination — instantly, without burning API budget."
-        )
-
     total = result.get("total_activities", 0)
     breakdown = result.get("breakdown_by_type", [])
     dist_m = result.get("total_distance_meters", 0)
     time_s = result.get("total_moving_time_seconds", 0)
     elev_m = result.get("total_elevation_meters", 0)
     filters = result.get("filters", {})
+    truncated = result.get("truncated", False)
 
     # Build filter description
     filter_parts = []
@@ -998,6 +986,16 @@ def format_vault_query(result: dict) -> str:
             lines.append(f"- **Total Work:** {_kilojoules(total_kj)}")
         if avg_wt is not None:
             lines.append(f"- **Avg Weighted Power:** {_watts(avg_wt)}")
+
+    # Truncation note — the API fallback path caps at one Strava page (200
+    # activities). If we hit that cap, the totals reflect only what came
+    # back, not the full history matching the filter.
+    if truncated:
+        lines.append(
+            "\n> ⚠️ Showing aggregates over the most recent 200 matching "
+            "activities (Strava API page limit). Run `strava_sync_activities` "
+            "for complete historical totals."
+        )
 
     # Breakdown by type
     if breakdown:

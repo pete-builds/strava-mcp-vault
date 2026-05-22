@@ -153,8 +153,6 @@ class CacheManager:
         Strava natively; ``sport_type`` and ``has_power`` are applied
         client-side after fetch).
         """
-        from strava_mcp_vault.sport_types import expand_sport_type
-
         vault_count = await self.db.get_vault_activity_count()
 
         if vault_count > 0:
@@ -168,12 +166,11 @@ class CacheManager:
             )
             shaped = [_shape_activity(a) for a in raw_activities]
         else:
-            # Vault empty: fall back to the Strava API. The list endpoint
-            # accepts before/after as epoch seconds; sport_type and
-            # has_power have no API equivalent and are applied client-side.
-            after_epoch = _iso_to_epoch(after)
-            before_epoch = _iso_to_epoch(before)
-            has_filters = bool(sport_type or after_epoch or before_epoch or has_power is not None)
+            # Vault empty: fall back to the Strava API. Uses the same
+            # _fetch_api_filtered helper as query_vault so the two tools
+            # agree on what's available when the vault hasn't been
+            # populated.
+            has_filters = bool(sport_type or after or before or has_power is not None)
 
             # Cache key includes the full filter signature so unfiltered and
             # filtered calls don't collide. Old "activities:list:N" entries
@@ -188,32 +185,20 @@ class CacheManager:
             if cached is not None:
                 return cached
 
-            # When filters are active, fetch a wider page so client-side
-            # filtering can still return up to `count` results. One API call,
-            # capped at Strava's per_page max of 200.
+            # When filters are active, fetch one full page so client-side
+            # filtering can still return up to `count` results. Otherwise
+            # just ask for `count`.
             fetch_size = 200 if has_filters else min(count, 200)
-            raw = await self.client.get_activities(
+            filtered, _truncated = await self._fetch_api_filtered(
+                sport_type=sport_type,
+                after=after,
+                before=before,
+                has_power=has_power,
                 per_page=fetch_size,
-                after=after_epoch,
-                before=before_epoch,
             )
 
-            # Client-side sport_type filter (supports aliases + comma lists).
-            allowed_sports = expand_sport_type(sport_type)
-            if allowed_sports is not None:
-                allowed = set(allowed_sports)
-                raw = [a for a in raw if (a.get("sport_type") or a.get("type")) in allowed]
-
-            # Client-side has_power filter — Strava embeds power fields in
-            # the list response when present, so this is just a presence
-            # check on the JSON blob.
-            if has_power is True:
-                raw = [a for a in raw if a.get("average_watts") is not None]
-            elif has_power is False:
-                raw = [a for a in raw if a.get("average_watts") is None]
-
             # Apply offset + count after filtering.
-            sliced = raw[max(offset, 0) : max(offset, 0) + count]
+            sliced = filtered[max(offset, 0) : max(offset, 0) + count]
             shaped = [_shape_activity(a) for a in sliced]
 
             await self.db.set_cached(key, category, shaped, TTL[category])
@@ -231,6 +216,98 @@ class CacheManager:
 
         return shaped
 
+    async def _fetch_api_filtered(
+        self,
+        sport_type: str | None,
+        after: str | None,
+        before: str | None,
+        has_power: bool | None,
+        per_page: int = 200,
+    ) -> tuple[list[dict], bool]:
+        """Fetch one page from Strava's list endpoint and apply filters.
+
+        Used as the fallback source by both ``get_recent_activities`` and
+        ``query_vault`` when the vault is empty, so both tools agree on
+        what's available regardless of vault state.
+
+        Returns (activities, truncated) where ``truncated`` is True if the
+        API returned a full page — meaning more activities likely exist that
+        weren't fetched.
+        """
+        from strava_mcp_vault.sport_types import expand_sport_type
+
+        after_epoch = _iso_to_epoch(after)
+        before_epoch = _iso_to_epoch(before)
+
+        raw = await self.client.get_activities(
+            per_page=per_page,
+            after=after_epoch,
+            before=before_epoch,
+        )
+        truncated = len(raw) >= per_page
+
+        allowed_sports = expand_sport_type(sport_type)
+        if allowed_sports is not None:
+            allowed = set(allowed_sports)
+            raw = [a for a in raw if (a.get("sport_type") or a.get("type")) in allowed]
+
+        if has_power is True:
+            raw = [a for a in raw if a.get("average_watts") is not None]
+        elif has_power is False:
+            raw = [a for a in raw if a.get("average_watts") is None]
+
+        return raw, truncated
+
+    @staticmethod
+    def _aggregate(activities: list[dict]) -> dict:
+        """Compute totals across an activity list.
+
+        Expects raw Strava-shaped dicts (distance in meters, moving_time in
+        integer seconds) — works for both raw API responses and raw vault
+        JSON blobs. Do not pass activities that have been through
+        ``_shape_activity`` (which converts units for display).
+        """
+        total_distance_m = 0.0
+        total_moving_time_s = 0
+        total_elevation_m = 0.0
+        total_kj = 0.0
+        weighted_power: list[float] = []
+        power_rides = 0
+        breakdown_counts: dict[str, int] = {}
+
+        for a in activities:
+            total_distance_m += a.get("distance") or 0
+            total_moving_time_s += a.get("moving_time") or 0
+            total_elevation_m += a.get("total_elevation_gain") or 0
+            kj = a.get("kilojoules")
+            if kj is not None:
+                total_kj += kj
+            wt = a.get("weighted_average_watts")
+            if wt is not None:
+                weighted_power.append(wt)
+            if a.get("average_watts") is not None:
+                power_rides += 1
+            sport = a.get("sport_type") or a.get("type") or "Unknown"
+            breakdown_counts[sport] = breakdown_counts.get(sport, 0) + 1
+
+        avg_weighted = sum(weighted_power) / len(weighted_power) if weighted_power else None
+        breakdown = sorted(
+            ({"sport_type": k, "count": v} for k, v in breakdown_counts.items()),
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+
+        return {
+            "total_activities": len(activities),
+            "breakdown_by_type": breakdown,
+            "total_distance_meters": total_distance_m,
+            "total_moving_time_seconds": total_moving_time_s,
+            "total_elevation_meters": total_elevation_m,
+            "total_kilojoules": total_kj if total_kj > 0 else None,
+            "avg_weighted_power": avg_weighted,
+            "power_rides_count": power_rides,
+        }
+
     async def query_vault(
         self,
         sport_type: str | None = None,
@@ -238,41 +315,46 @@ class CacheManager:
         before: str | None = None,
         has_power: bool | None = None,
     ) -> dict:
-        """Return a summary of vault activities matching the given filters.
+        """Return a summary of activities matching the given filters.
 
-        Returns counts by sport_type, totals for distance/time/elevation, and
-        power aggregates (work + weighted-avg power + count of power-meter
-        rides) when any activities have power data.
+        Source-agnostic: reads from the vault when populated, falls back to
+        the Strava API (one page, up to 200 activities) when empty so the
+        result stays consistent with ``get_recent_activities``. When the
+        fallback hits the per-page cap, ``truncated`` is set to True in the
+        result so callers can flag that totals may be incomplete.
         """
         from strava_mcp_vault.sport_types import expand_sport_type
 
+        filters = {
+            "sport_type": sport_type,
+            "after": after,
+            "before": before,
+            "has_power": has_power,
+        }
+        vault_total = await self.db.get_vault_activity_count()
+
+        if vault_total == 0:
+            # API fallback. Same path get_recent_activities uses, same
+            # filter semantics, so the two tools return matching aggregates
+            # even when the vault hasn't been populated yet.
+            activities, truncated = await self._fetch_api_filtered(
+                sport_type=sport_type,
+                after=after,
+                before=before,
+                has_power=has_power,
+                per_page=200,
+            )
+            result = self._aggregate(activities)
+            result["filters"] = filters
+            result["api_fallback"] = True
+            result["truncated"] = truncated
+            return result
+
+        # Vault path: count + breakdown via dedicated SQL aggregates (cheaper
+        # than loading every matching row), but load rows for power +
+        # distance totals since those require summing.
         expanded_sport = expand_sport_type(sport_type)
 
-        # Detect empty vault up front. query_vault has no API fallback (full
-        # aggregation across hundreds of activities would burn rate-limit
-        # budget on every call), so we surface a clear "run sync_activities"
-        # message instead of returning misleading zeros.
-        vault_total = await self.db.get_vault_activity_count()
-        if vault_total == 0:
-            return {
-                "vault_empty": True,
-                "total_activities": 0,
-                "breakdown_by_type": [],
-                "total_distance_meters": 0,
-                "total_moving_time_seconds": 0,
-                "total_elevation_meters": 0,
-                "total_kilojoules": None,
-                "avg_weighted_power": None,
-                "power_rides_count": 0,
-                "filters": {
-                    "sport_type": sport_type,
-                    "after": after,
-                    "before": before,
-                    "has_power": has_power,
-                },
-            }
-
-        # Get count and breakdown
         total = await self.db.get_vault_activity_count(
             sport_type=sport_type,
             after=after,
@@ -283,13 +365,10 @@ class CacheManager:
             after=after,
             before=before,
         )
-
-        # If a sport_type filter is active, only include matching types in breakdown
         if expanded_sport is not None:
             allowed = set(expanded_sport)
             breakdown = [b for b in breakdown if b["sport_type"] in allowed]
 
-        # Pull matching activities for aggregate stats
         activities = await self.db.get_vault_activities(
             limit=1000,
             sport_type=sport_type,
@@ -298,47 +377,15 @@ class CacheManager:
             has_power=has_power,
         )
 
-        total_distance_m = 0
-        total_moving_time_s = 0
-        total_elevation_m = 0
-        total_kilojoules = 0.0
-        weighted_power_samples: list[float] = []
-        power_rides_count = 0
-        for a in activities:
-            total_distance_m += a.get("distance") or 0
-            total_moving_time_s += a.get("moving_time") or 0
-            total_elevation_m += a.get("total_elevation_gain") or 0
-            kj = a.get("kilojoules")
-            if kj is not None:
-                total_kilojoules += kj
-            wt = a.get("weighted_average_watts")
-            if wt is not None:
-                weighted_power_samples.append(wt)
-            if a.get("average_watts") is not None:
-                power_rides_count += 1
-
-        avg_weighted_power = (
-            sum(weighted_power_samples) / len(weighted_power_samples)
-            if weighted_power_samples
-            else None
-        )
-
-        return {
-            "total_activities": total,
-            "breakdown_by_type": breakdown,
-            "total_distance_meters": total_distance_m,
-            "total_moving_time_seconds": total_moving_time_s,
-            "total_elevation_meters": total_elevation_m,
-            "total_kilojoules": total_kilojoules if total_kilojoules > 0 else None,
-            "avg_weighted_power": avg_weighted_power,
-            "power_rides_count": power_rides_count,
-            "filters": {
-                "sport_type": sport_type,
-                "after": after,
-                "before": before,
-                "has_power": has_power,
-            },
-        }
+        agg = self._aggregate(activities)
+        # The dedicated count covers all matches; the loaded sample is
+        # capped at 1000 for performance. Use total + SQL breakdown.
+        agg["total_activities"] = total
+        agg["breakdown_by_type"] = breakdown
+        agg["filters"] = filters
+        agg["api_fallback"] = False
+        agg["truncated"] = False
+        return agg
 
     async def _resolve_gear_name(self, gear_id: str) -> str | None:
         """Look up a gear name by ID, cached for 7 days."""

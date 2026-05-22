@@ -160,95 +160,107 @@ async def test_fallback_offset_applied_after_filter(
     assert len(results) == 2
 
 
-# ── Empty-vault UX: server tool nudges sync_activities ───────────────
+# ── Consistency: query_vault and get_recent_activities use same data source ─
+#
+# When the vault is empty both tools fall back to the Strava API with the
+# same filter semantics, so callers asking the same question get the same
+# answer regardless of vault state. This was the root cause of the bug
+# where get_recent_activities(sport_type="cycling", after=April) returned
+# 16 rides and query_vault with the same filters returned 0.
 
 
-async def test_get_recent_activities_appends_fallback_hint_when_vault_empty(
-    mock_strava_client, mixed_api_response, monkeypatch
+async def test_query_vault_uses_api_fallback_on_empty_vault(
+    cache_manager, mock_strava_client, mixed_api_response
 ):
-    """When the vault is empty, the tool response nudges sync_activities."""
-    from strava_mcp_vault import server
-    from strava_mcp_vault.cache.db import CacheDB
-    from strava_mcp_vault.cache.manager import CacheManager
-
-    db = CacheDB(":memory:")
-    await db.init()
+    """query_vault on empty vault returns real aggregates from the API."""
     mock_strava_client.get_activities.return_value = mixed_api_response
-    mgr = CacheManager(db, mock_strava_client)
-    monkeypatch.setattr(server, "manager", mgr)
-
-    output = await server.get_recent_activities(count=5, sport_type="rides")
-
-    assert "Vault is empty" in output
-    assert "strava_sync_activities" in output
-    await db.close()
+    result = await cache_manager.query_vault(sport_type="rides")
+    # 3 rides in mixed_api_response: Ride, GravelRide, VirtualRide
+    assert result["total_activities"] == 3
+    assert result["api_fallback"] is True
+    sports = {b["sport_type"] for b in result["breakdown_by_type"]}
+    assert sports == {"Ride", "GravelRide", "VirtualRide"}
 
 
-async def test_get_recent_activities_json_envelope_includes_fallback_flag(
-    mock_strava_client, mixed_api_response, monkeypatch
+async def test_query_vault_aggregates_power_via_api_fallback(
+    cache_manager, mock_strava_client, mixed_api_response
 ):
-    """JSON envelope flags api_fallback so programmatic callers can act on it."""
-    import json
-
-    from strava_mcp_vault import server
-    from strava_mcp_vault.cache.db import CacheDB
-    from strava_mcp_vault.cache.manager import CacheManager
-
-    db = CacheDB(":memory:")
-    await db.init()
+    """Power aggregates work on the API fallback path."""
     mock_strava_client.get_activities.return_value = mixed_api_response
-    mgr = CacheManager(db, mock_strava_client)
-    monkeypatch.setattr(server, "manager", mgr)
-
-    output = await server.get_recent_activities(count=3, sport_type="rides", response_format="json")
-    payload = json.loads(output)
-    assert payload["api_fallback"] is True
-    assert "sync_activities" in payload["hint"]
-    await db.close()
+    result = await cache_manager.query_vault(sport_type="rides", has_power=True)
+    # Two power-meter rides in fixture (Ride + GravelRide, each with 360 kJ)
+    assert result["power_rides_count"] == 2
+    assert result["total_kilojoules"] == pytest.approx(720.0)
+    assert result["avg_weighted_power"] == pytest.approx(215.0)
 
 
-async def test_get_recent_activities_no_hint_when_vault_populated(
-    mock_strava_client, sample_power_ride, monkeypatch
+async def test_query_vault_truncation_flag_when_full_page(cache_manager, mock_strava_client):
+    """When the API returns a full page, truncated flag warns of incomplete totals."""
+    full_page = [_make_activity(i, "Ride") for i in range(200)]
+    mock_strava_client.get_activities.return_value = full_page
+    result = await cache_manager.query_vault()
+    assert result["truncated"] is True
+
+
+async def test_query_vault_not_truncated_when_partial_page(
+    cache_manager, mock_strava_client, mixed_api_response
 ):
-    """Hint disappears once vault has activities (normal steady-state)."""
-    from strava_mcp_vault import server
-    from strava_mcp_vault.cache.db import CacheDB
-    from strava_mcp_vault.cache.manager import CacheManager
-
-    db = CacheDB(":memory:")
-    await db.init()
-    await db.upsert_activity(sample_power_ride)
-    mgr = CacheManager(db, mock_strava_client)
-    monkeypatch.setattr(server, "manager", mgr)
-
-    output = await server.get_recent_activities(count=5)
-
-    assert "Vault is empty" not in output
-    assert "strava_sync_activities" not in output
-    await db.close()
+    """Partial page → truncated False, totals are complete for the window."""
+    mock_strava_client.get_activities.return_value = mixed_api_response
+    result = await cache_manager.query_vault()
+    assert result["truncated"] is False
 
 
-# ── Empty-vault UX: query_vault returns a clear notice ─────────────
+async def test_get_recent_and_query_vault_agree_on_count(
+    cache_manager, mock_strava_client, mixed_api_response
+):
+    """Same filters, same data source — same answer. This is the regression."""
+    mock_strava_client.get_activities.return_value = mixed_api_response
+    list_result = await cache_manager.get_recent_activities(count=50, sport_type="rides")
+    agg_result = await cache_manager.query_vault(sport_type="rides")
+    assert len(list_result) == agg_result["total_activities"]
 
 
-async def test_query_vault_returns_empty_vault_notice(cache_manager):
-    """query_vault on an empty vault returns vault_empty flag instead of zeros."""
-    result = await cache_manager.query_vault(sport_type="cycling", after="2026-04-01")
-    assert result["vault_empty"] is True
-
-
-def test_format_vault_query_renders_empty_vault_notice():
-    """The empty-vault result renders an actionable message."""
-    from strava_mcp_vault.formatters import format_vault_query
-
-    output = format_vault_query({"vault_empty": True})
-    assert "Vault is empty" in output
-    assert "strava_sync_activities" in output
-
-
-async def test_query_vault_skips_empty_notice_when_populated(cache_manager, sample_activity):
-    """Once the vault has rows, query_vault returns real aggregates again."""
+async def test_query_vault_uses_vault_when_populated(cache_manager, sample_activity):
+    """Once the vault has data, query_vault uses it (no API call)."""
     await cache_manager.db.upsert_activity(sample_activity)
     result = await cache_manager.query_vault()
-    assert "vault_empty" not in result or result.get("vault_empty") is not True
     assert result["total_activities"] >= 1
+    assert result["api_fallback"] is False
+    # No API call should have happened on the vault path
+    cache_manager.client.get_activities.assert_not_called()
+
+
+def test_format_vault_query_renders_truncation_note():
+    """format_vault_query shows the truncation warning when set."""
+    from strava_mcp_vault.formatters import format_vault_query
+
+    result = {
+        "total_activities": 200,
+        "breakdown_by_type": [],
+        "total_distance_meters": 0,
+        "total_moving_time_seconds": 0,
+        "total_elevation_meters": 0,
+        "truncated": True,
+        "filters": {},
+    }
+    output = format_vault_query(result)
+    assert "most recent 200" in output
+    assert "strava_sync_activities" in output
+
+
+def test_format_vault_query_no_truncation_note_when_complete():
+    """No truncation note on a clean result."""
+    from strava_mcp_vault.formatters import format_vault_query
+
+    result = {
+        "total_activities": 5,
+        "breakdown_by_type": [],
+        "total_distance_meters": 0,
+        "total_moving_time_seconds": 0,
+        "total_elevation_meters": 0,
+        "truncated": False,
+        "filters": {},
+    }
+    output = format_vault_query(result)
+    assert "most recent 200" not in output
