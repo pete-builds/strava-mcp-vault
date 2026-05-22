@@ -55,8 +55,10 @@ def _tool_error(tool_name: str, e: Exception) -> str:
             return f"Strava API: resource not found. Check the ID. ({e.path})"
         if e.status_code in (401, 403):
             detail_lower = (e.detail or "").lower()
-            scope_markers = ("activity:read_permission", "missing scope", "insufficient scope")
-            if any(m in detail_lower for m in scope_markers):
+            # Strava returns this field in its errors[] body when the token
+            # was minted without activity:read_all. This is the most common
+            # 401 cause in practice and warrants a more specific message.
+            if "activity:read_permission" in detail_lower:
                 return (
                     f"Strava API: insufficient scope on {e.path}. The current "
                     "tokens are missing 'activity:read_all'. Re-run the OAuth "
