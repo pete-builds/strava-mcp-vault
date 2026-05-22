@@ -94,6 +94,21 @@ class CacheDB:
 
         await self.cleanup_expired()
 
+    async def _bump_stat(self, category: str, *, hit: bool):
+        """Atomically increment a category's hit or miss counter."""
+        if hit:
+            sql = (
+                "INSERT INTO cache_stats (category, hits, misses) VALUES (?, 1, 0) "
+                "ON CONFLICT(category) DO UPDATE SET hits = hits + 1"
+            )
+        else:
+            sql = (
+                "INSERT INTO cache_stats (category, hits, misses) VALUES (?, 0, 1) "
+                "ON CONFLICT(category) DO UPDATE SET misses = misses + 1"
+            )
+        await self._db.execute(sql, (category,))
+        await self._db.commit()
+
     async def get_cached(self, key: str) -> dict | None:
         cursor = await self._db.execute(
             "SELECT data, category, expires_at FROM cache WHERE cache_key = ?",
@@ -102,40 +117,17 @@ class CacheDB:
         row = await cursor.fetchone()
 
         if row is None:
-            # Record a miss with unknown category
-            await self._db.execute(
-                "INSERT OR IGNORE INTO cache_stats (category, hits, misses) VALUES ('unknown', 0, 0)"
-            )
-            await self._db.execute(
-                "UPDATE cache_stats SET misses = misses + 1 WHERE category = 'unknown'"
-            )
-            await self._db.commit()
+            await self._bump_stat("unknown", hit=False)
             return None
 
         data, category, expires_at = row
 
         if expires_at < time.time():
             await self.invalidate(key)
-            await self._db.execute(
-                "INSERT OR IGNORE INTO cache_stats (category, hits, misses) VALUES (?, 0, 0)",
-                (category,),
-            )
-            await self._db.execute(
-                "UPDATE cache_stats SET misses = misses + 1 WHERE category = ?",
-                (category,),
-            )
-            await self._db.commit()
+            await self._bump_stat(category, hit=False)
             return None
 
-        await self._db.execute(
-            "INSERT OR IGNORE INTO cache_stats (category, hits, misses) VALUES (?, 0, 0)",
-            (category,),
-        )
-        await self._db.execute(
-            "UPDATE cache_stats SET hits = hits + 1 WHERE category = ?",
-            (category,),
-        )
-        await self._db.commit()
+        await self._bump_stat(category, hit=True)
         return json.loads(data)
 
     async def set_cached(self, key: str, category: str, data: dict, ttl_seconds: int):
@@ -157,6 +149,9 @@ class CacheDB:
         await self._db.commit()
 
     async def get_stats(self) -> dict:
+        # Opportunistic cleanup: stats is called by get_cache_stats, which is
+        # the most natural moment to evict expired rows without a background task.
+        await self.cleanup_expired()
         cursor = await self._db.execute("SELECT category, hits, misses FROM cache_stats")
         rows = await cursor.fetchall()
         stats = {row[0]: {"hits": row[1], "misses": row[2]} for row in rows}
@@ -387,10 +382,14 @@ class CacheDB:
         return results
 
     async def set_location_override(self, activity_id: int, location: str | None) -> bool:
-        """Set (or clear) a manual location string for an activity. Returns True if found."""
+        """Set (or clear) a manual location string for an activity. Returns True if found.
+
+        An empty string is treated as a clear (stored as NULL).
+        """
+        normalized = location if location else None
         cursor = await self._db.execute(
             "UPDATE activities SET location_override = ? WHERE id = ?",
-            (location, activity_id),
+            (normalized, activity_id),
         )
         await self._db.commit()
         return cursor.rowcount > 0
