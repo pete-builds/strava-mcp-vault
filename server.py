@@ -368,8 +368,10 @@ async def sync_activities(days_back: int = 0) -> str:
     Typically takes 1-3 API calls for a full sync (~200 activities).
 
     Args:
-        days_back: 0 = auto (incremental or full). >0 = fetch last N days.
+        days_back: 0 = auto (incremental or full). >0 = fetch last N days (max 3650).
     """
+    if days_back < 0 or days_back > 3650:
+        return "days_back must be between 0 and 3650 (10 years)."
     try:
         result = await manager.sync_activities(days_back)
         return format_sync_result(result)

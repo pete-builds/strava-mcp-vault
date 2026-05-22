@@ -17,6 +17,11 @@ _last_request_time: float = 0.0
 # reverse-geocode batches can race the read/sleep/write triple without this.
 _request_lock = threading.Lock()
 
+# In-memory cache for forward geocoding. Place names rarely change and we
+# bound this to keep memory predictable; on overflow we just clear it.
+_forward_cache: dict[str, tuple[float, float] | None] = {}
+_FORWARD_CACHE_MAX = 1000
+
 
 def _get(url: str) -> dict | list:
     global _last_request_time
@@ -33,16 +38,27 @@ def _get(url: str) -> dict | list:
 
 
 async def forward_geocode(place: str) -> tuple[float, float] | None:
-    """Resolve a place name to (lat, lon). Returns None if not found or on error."""
+    """Resolve a place name to (lat, lon). Returns None if not found or on error.
+
+    Results (hits and misses) are cached in-process to avoid re-hitting
+    Nominatim for repeated queries.
+    """
+    key = place.strip().lower()
+    if key in _forward_cache:
+        return _forward_cache[key]
+
     url = f"{_BASE}/search?q={urllib.parse.quote(place)}&format=json&limit=1"
     try:
         result = await asyncio.to_thread(_get, url)
     except Exception:
         logger.warning("Geocoding failed for '%s'", place, exc_info=True)
         return None
-    if not result:
-        return None
-    return float(result[0]["lat"]), float(result[0]["lon"])
+    coords = (float(result[0]["lat"]), float(result[0]["lon"])) if result else None
+
+    if len(_forward_cache) >= _FORWARD_CACHE_MAX:
+        _forward_cache.clear()
+    _forward_cache[key] = coords
+    return coords
 
 
 async def reverse_geocode_many(
