@@ -16,18 +16,12 @@ Mark items with `[x]` when complete and add a one-line note with the commit SHA 
 
 ### Medium severity
 
-- [ ] **Bare `except Exception: pass` on `ALTER TABLE`** — `cache/db.py:76-79`
-  Catch `aiosqlite.OperationalError` / `sqlite3.OperationalError` and verify "duplicate column name" — typos in column specs are currently silent.
-- [ ] **SQLite never enabled WAL mode** — `cache/db.py:29`
-  Add `PRAGMA journal_mode = WAL` and `PRAGMA synchronous = NORMAL` after connect. Default rollback journal serializes reader/writer; cache-stats writes on every read amplify this.
-- [ ] **Inconsistent tool error handling** — `server.py:229-233, 292-308, 311-325`
-  `get_cache_stats`, `set_activity_location`, `delete_vault_activity` lack the `try/except VaultError` wrapper that the other 7 tools have. DB errors will surface as raw stack traces.
-- [ ] **`forward_geocode` rate-limit global isn't locked** — `cache/geocode.py:14-26`
-  `_last_request_time` is module-global; concurrent `reverse_geocode_many` calls running under `asyncio.to_thread` can race past Nominatim's 1-req/sec policy. Use an `asyncio.Lock`.
-- [ ] **Serial gear-name lookups in async** — `cache/manager.py:151-155`
-  Replace the sequential `for gid in gear_ids: await self._resolve_gear_name(gid)` with `asyncio.gather` to parallelize cache-miss fan-out on first sync.
-- [ ] **`_resolve_gear_name` swallows all exceptions silently** — `cache/manager.py:224-229`
-  Log at `warning` instead of `return None` with no trace.
+- [x] **Bare `except Exception: pass` on `ALTER TABLE`** — `cache/db.py:76-79` — fixed in `6daa45e` (narrow to sqlite3.OperationalError + "duplicate column name" check)
+- [x] **SQLite never enabled WAL mode** — `cache/db.py:29` — fixed in `6daa45e` (PRAGMA journal_mode=WAL + synchronous=NORMAL)
+- [x] **Inconsistent tool error handling** — `server.py:229-233, 292-308, 311-325` — fixed in `21be328` (try/except VaultError wrappers added to all 3 tools)
+- [x] **`forward_geocode` rate-limit global isn't locked** — `cache/geocode.py:14-26` — fixed in `f6605d4` (threading.Lock around the gating sleep, safe across asyncio.to_thread workers)
+- [x] **Serial gear-name lookups in async** — `cache/manager.py:151-155` — fixed in `84e5fa8` (asyncio.gather)
+- [x] **`_resolve_gear_name` swallows all exceptions silently** — `cache/manager.py:224-229` — fixed in `84e5fa8` (logger.warning with exc_info)
 
 ### Low severity / nits
 
