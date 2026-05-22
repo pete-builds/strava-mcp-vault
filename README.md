@@ -42,14 +42,19 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 
 | Tool | Description | Cache TTL |
 |------|-------------|-----------|
-| `get_recent_activities` | List recent activities with distance, time, HR | 1 hour |
-| `get_activity` | Full activity detail (segments, splits, gear) | 24 hours |
-| `get_activity_streams` | Time-series data (heart rate, elevation, GPS) | 7 days |
-| `get_athlete_profile` | Authenticated athlete info | 24 hours |
-| `get_athlete_stats` | YTD and all-time totals | 1 day |
-| `get_cache_stats` | Cache hit/miss rates and API rate limit status | none |
-| `sync_activities` | Bulk-sync recent activities into cache | varies |
-| `query_vault` | Filter and aggregate cached activities by date, sport type | none |
+| `strava_get_recent_activities` | List recent activities with distance, time, HR. Supports `offset` pagination and `compact` table view. | 1 hour (API fallback) |
+| `strava_get_activity` | Full activity detail (segments, splits, gear) | 24 hours |
+| `strava_get_activity_streams` | Time-series data (heart rate, elevation, GPS) | 7 days |
+| `strava_get_athlete_profile` | Authenticated athlete info | 24 hours |
+| `strava_get_athlete_stats` | YTD and all-time totals | 1 day |
+| `strava_get_cache_stats` | Cache hit/miss rates and API rate limit status | — |
+| `strava_get_activities_near` | Find vault activities that started within N miles of a location. Supports `limit`/`offset` pagination. | — |
+| `strava_query_vault` | Filter and aggregate vault activities by date and sport type | — |
+| `strava_set_activity_location` | Manually set (or clear) a display location on a vault activity | — |
+| `strava_delete_vault_activity` | Remove one or more activities from the local vault (does not affect Strava) | — |
+| `strava_sync_activities` | Sync activities into the vault. First run pulls full history; subsequent runs are incremental. | — |
+
+All read tools accept a `response_format` parameter: `"markdown"` (default) for human-readable output or `"json"` for programmatic use.
 
 ## Example Output
 
@@ -156,7 +161,7 @@ Copy `access_token` and `refresh_token` from the JSON response into your `.env` 
 ## Quick Start
 
 ```bash
-git clone https://github.com/pete-builds/strava-mcp-vault.git
+git clone https://github.com/sethneal/strava-mcp-vault.git
 cd strava-mcp-vault
 cp .env.example .env
 # Edit .env with your credentials (see Setup above)
@@ -232,7 +237,7 @@ Requires Python 3.13+.
 
 ## Troubleshooting
 
-**401 Authorization Error**: Wrong OAuth scopes. You need `activity:read_all`, not just `read`. See the [OAuth Walkthrough](#oauth-walkthrough).
+**401 Authorization Error**: Wrong OAuth scopes. You need `activity:read_all`, not just `read`. See [OAuth: Get your access tokens](#oauth-get-your-access-tokens).
 
 **429 Rate Limit**: Strava caps at 100 requests per 15 minutes, 1,000 per day. Wait and retry. Use `sync_activities` to bulk-cache data and reduce future API calls.
 
