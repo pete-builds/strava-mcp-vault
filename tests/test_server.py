@@ -169,3 +169,35 @@ async def test_set_activity_location_not_found(mock_manager):
     mock_manager.db.set_location_override.return_value = False
     result = await set_activity_location(activity_id=999)
     assert "not found" in result
+
+
+def test_format_error_401_with_scope_hint_says_rerun_oauth():
+    """When 401 detail mentions a missing scope, point users at OAuth, not reseed."""
+    from server import _tool_error
+    from exceptions import StravaAPIError
+
+    err = StravaAPIError(
+        status_code=401,
+        path="/athlete/activities",
+        detail='{"message":"Authorization Error","errors":[{"resource":"AccessToken","field":"activity:read_permission","code":"missing"}]}',
+    )
+    msg = _tool_error("strava_get_recent_activities", err)
+
+    assert "scope" in msg.lower()
+    assert "activity:read_all" in msg
+    assert "reseed" not in msg.lower()
+
+
+def test_format_error_401_without_scope_hint_says_reseed():
+    """Plain 401 (no scope marker in body) still recommends reseeding tokens."""
+    from server import _tool_error
+    from exceptions import StravaAPIError
+
+    err = StravaAPIError(
+        status_code=401,
+        path="/athlete/activities",
+        detail="",
+    )
+    msg = _tool_error("strava_get_recent_activities", err)
+
+    assert "reseed" in msg.lower() or "re-seed" in msg.lower()

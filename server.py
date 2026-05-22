@@ -54,6 +54,16 @@ def _tool_error(tool_name: str, e: Exception) -> str:
         if e.status_code == 404:
             return f"Strava API: resource not found. Check the ID. ({e.path})"
         if e.status_code in (401, 403):
+            detail_lower = (e.detail or "").lower()
+            scope_markers = ("activity:read_permission", "missing scope", "insufficient scope")
+            if any(m in detail_lower for m in scope_markers):
+                return (
+                    f"Strava API: insufficient scope on {e.path}. The current "
+                    "tokens are missing 'activity:read_all'. Re-run the OAuth "
+                    "flow with scope=read,activity:read_all and update "
+                    "STRAVA_ACCESS_TOKEN / STRAVA_REFRESH_TOKEN. "
+                    "See README#oauth-get-your-access-tokens."
+                )
             return (
                 f"Strava API: unauthorized ({e.path}). The access token may be "
                 "expired or revoked; reseed STRAVA_ACCESS_TOKEN / STRAVA_REFRESH_TOKEN."
