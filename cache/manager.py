@@ -11,6 +11,7 @@ Vault vs Cache:
   full activity detail, athlete profile/stats). Expires per category.
 """
 
+import asyncio
 import logging
 import time
 
@@ -146,17 +147,18 @@ class CacheManager:
 
             await self.db.set_cached(key, category, shaped, TTL[category])
 
-        # Resolve gear names
-        gear_ids = {a["gear_id"] for a in shaped if a.get("gear_id")}
-        gear_map = {}
-        for gid in gear_ids:
-            name = await self._resolve_gear_name(gid)
-            if name:
-                gear_map[gid] = name
-        for a in shaped:
-            gid = a.get("gear_id")
-            if gid and gid in gear_map:
-                a["gear_name"] = gear_map[gid]
+        # Resolve gear names in parallel; cache hits return instantly, only
+        # cache-misses fan out to the API.
+        gear_ids = list({a["gear_id"] for a in shaped if a.get("gear_id")})
+        if gear_ids:
+            names = await asyncio.gather(
+                *(self._resolve_gear_name(gid) for gid in gear_ids)
+            )
+            gear_map = {gid: name for gid, name in zip(gear_ids, names) if name}
+            for a in shaped:
+                gid = a.get("gear_id")
+                if gid in gear_map:
+                    a["gear_name"] = gear_map[gid]
 
         return shaped
 
@@ -226,6 +228,7 @@ class CacheManager:
             await self.db.set_cached(key, "gear", gear, 604800)  # 7 days
             return gear.get("name")
         except Exception:
+            logger.warning("Gear lookup failed for %s", gear_id, exc_info=True)
             return None
 
     async def get_activity(self, activity_id: int) -> dict:
