@@ -114,6 +114,7 @@ class CacheManager:
     async def get_recent_activities(
         self,
         count: int = 10,
+        offset: int = 0,
         sport_type: str | None = None,
         after: str | None = None,
         before: str | None = None,
@@ -121,13 +122,15 @@ class CacheManager:
         """Return a shaped list of recent activities with optional filters.
 
         Local-first: reads from the vault if it has data.
-        Falls back to the API if the vault is empty.
+        Falls back to the API if the vault is empty (offset is ignored in
+        the fallback path; Strava paginates natively if you need it).
         """
         vault_count = await self.db.get_vault_activity_count()
 
         if vault_count > 0:
             raw_activities = await self.db.get_vault_activities(
                 limit=min(count, 200),
+                offset=max(offset, 0),
                 sport_type=sport_type,
                 after=after,
                 before=before,

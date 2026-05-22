@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -32,6 +33,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _jsonify(obj) -> str:
+    """Serialize tool output as pretty JSON. Non-serializable values stringify."""
+    return json.dumps(obj, indent=2, default=str)
 
 
 def _tool_error(tool_name: str, e: Exception) -> str:
@@ -141,27 +147,44 @@ mcp = FastMCP("strava_mcp", host="0.0.0.0", port=port, lifespan=lifespan)
 )
 async def get_recent_activities(
     count: int = 10,
+    offset: int = 0,
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
     compact: bool = False,
+    response_format: str = "markdown",
 ) -> str:
     """List recent Strava activities with distance, time, and stats.
 
     Args:
         count: Number of activities to return (default 10, max 200).
+        offset: Skip the first N activities for pagination (default 0).
         sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide", "Snowboard").
         after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-04-01").
         compact: If true, return a compact one-line-per-activity table instead of full cards.
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
         results = await manager.get_recent_activities(
             count,
+            offset=offset,
             sport_type=sport_type,
             after=after,
             before=before,
         )
+        if response_format == "json":
+            total = await manager.db.get_vault_activity_count(
+                sport_type=sport_type, after=after, before=before
+            )
+            return _jsonify({
+                "total": total,
+                "count": len(results),
+                "offset": offset,
+                "items": results,
+                "has_more": offset + len(results) < total,
+                "next_offset": offset + len(results) if offset + len(results) < total else None,
+            })
         if compact:
             return format_recent_activities_compact(results)
         return format_recent_activities(results)
@@ -183,6 +206,7 @@ async def query_vault(
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
+    response_format: str = "markdown",
 ) -> str:
     """Query the activity vault for counts and totals with optional filters.
 
@@ -194,6 +218,7 @@ async def query_vault(
         sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
         after: Only activities on or after this date (ISO format, e.g. "2026-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-04-01").
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
         result = await manager.query_vault(
@@ -201,6 +226,8 @@ async def query_vault(
             after=after,
             before=before,
         )
+        if response_format == "json":
+            return _jsonify(result)
         return format_vault_query(result)
     except Exception as e:
         return _tool_error("query_vault", e)
@@ -216,14 +243,17 @@ async def query_vault(
         "openWorldHint": True,
     },
 )
-async def get_activity(activity_id: int) -> str:
+async def get_activity(activity_id: int, response_format: str = "markdown") -> str:
     """Get full details for a specific Strava activity.
 
     Args:
         activity_id: The Strava activity ID.
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
         result = await manager.get_activity(activity_id)
+        if response_format == "json":
+            return _jsonify(result)
         return format_activity_detail(result)
     except Exception as e:
         return _tool_error("get_activity", e)
@@ -240,16 +270,21 @@ async def get_activity(activity_id: int) -> str:
     },
 )
 async def get_activity_streams(
-    activity_id: int, stream_types: str = "heartrate,distance,altitude"
+    activity_id: int,
+    stream_types: str = "heartrate,distance,altitude",
+    response_format: str = "markdown",
 ) -> str:
     """Get time-series data for an activity (heart rate, elevation, etc).
 
     Args:
         activity_id: The Strava activity ID.
         stream_types: Comma-separated stream types (e.g. heartrate,distance,altitude).
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     try:
         result = await manager.get_activity_streams(activity_id, stream_types)
+        if response_format == "json":
+            return _jsonify(result)
         return format_activity_streams(result, activity_id)
     except Exception as e:
         return _tool_error("get_activity_streams", e)
@@ -265,10 +300,16 @@ async def get_activity_streams(
         "openWorldHint": True,
     },
 )
-async def get_athlete_profile() -> str:
-    """Get the authenticated Strava athlete's profile."""
+async def get_athlete_profile(response_format: str = "markdown") -> str:
+    """Get the authenticated Strava athlete's profile.
+
+    Args:
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
+    """
     try:
         result = await manager.get_athlete_profile()
+        if response_format == "json":
+            return _jsonify(result)
         return format_athlete_profile(result)
     except Exception as e:
         return _tool_error("get_athlete_profile", e)
@@ -284,10 +325,16 @@ async def get_athlete_profile() -> str:
         "openWorldHint": True,
     },
 )
-async def get_athlete_stats() -> str:
-    """Get year-to-date and all-time activity statistics."""
+async def get_athlete_stats(response_format: str = "markdown") -> str:
+    """Get year-to-date and all-time activity statistics.
+
+    Args:
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
+    """
     try:
         result = await manager.get_athlete_stats()
+        if response_format == "json":
+            return _jsonify(result)
         return format_athlete_stats(result)
     except Exception as e:
         return _tool_error("get_athlete_stats", e)
@@ -311,10 +358,16 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
         "openWorldHint": False,
     },
 )
-async def get_cache_stats() -> str:
-    """Show cache hit/miss rates, stored items, and API rate limit status."""
+async def get_cache_stats(response_format: str = "markdown") -> str:
+    """Show cache hit/miss rates, stored items, and API rate limit status.
+
+    Args:
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
+    """
     try:
         stats = await manager.get_cache_stats()
+        if response_format == "json":
+            return _jsonify(stats)
         return format_cache_stats(stats)
     except Exception as e:
         return _tool_error("get_cache_stats", e)
@@ -336,6 +389,9 @@ async def get_activities_near(
     sport_type: str | None = None,
     after: str | None = None,
     before: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    response_format: str = "markdown",
 ) -> str:
     """Find vault activities that started near a given location.
 
@@ -344,10 +400,13 @@ async def get_activities_near(
 
     Args:
         location: Place name to search near (e.g. "Syracuse, NY", "Central Park").
-        radius_miles: Search radius in miles (default 20).
+        radius_miles: Search radius in miles (default 20, max 250).
         sport_type: Filter by activity type (e.g. "Ride", "Run", "GravelRide").
         after: Only activities on or after this date (ISO format, e.g. "2025-01-01").
         before: Only activities before this date (ISO format, e.g. "2026-01-01").
+        limit: Maximum activities to return (default 50, max 500).
+        offset: Skip the first N results for pagination (default 0).
+        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
     """
     location = (location or "").strip()
     if not location:
@@ -357,11 +416,16 @@ async def get_activities_near(
     if radius_error:
         return radius_error
 
+    if limit < 1 or limit > 500:
+        return "limit must be between 1 and 500."
+    if offset < 0:
+        return "offset must be >= 0."
+
     coords = await forward_geocode(location)
     if coords is None:
         return f"Could not geocode '{location}'. Try a more specific place name."
     lat, lon = coords
-    results = await manager.db.get_activities_near_location(
+    all_results = await manager.db.get_activities_near_location(
         lat,
         lon,
         radius_miles=radius_miles,
@@ -369,6 +433,8 @@ async def get_activities_near(
         after=after,
         before=before,
     )
+    total = len(all_results)
+    results = all_results[offset : offset + limit]
     if results:
         activity_coords = [
             (a["start_latlng"][0], a["start_latlng"][1])
@@ -382,6 +448,18 @@ async def get_activities_near(
             else:
                 coords_key = tuple(a["start_latlng"][:2]) if a.get("start_latlng") else None
                 a["_location"] = location_map.get(coords_key, "") if coords_key else ""
+
+    if response_format == "json":
+        return _jsonify({
+            "total": total,
+            "count": len(results),
+            "offset": offset,
+            "items": results,
+            "has_more": offset + len(results) < total,
+            "next_offset": offset + len(results) if offset + len(results) < total else None,
+            "location": location,
+            "radius_miles": radius_miles,
+        })
     return format_activities_near(results, location, radius_miles)
 
 
