@@ -46,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the container.
 
 ### Fixed
+- **API fallback path now honors every filter.** When the vault is empty,
+  `get_recent_activities` used to silently drop `sport_type`, `has_power`,
+  `before`, and `after`. `before`/`after` are now converted to epoch and
+  passed to Strava's `/athlete/activities` natively; `sport_type` and
+  `has_power` are applied client-side after fetch. Fetch size widens to 200
+  when filters are present so client-side filtering can still satisfy
+  `count`. Cache key includes the full filter signature so unfiltered and
+  filtered results don't collide.
 - README warning about Strava refresh-token rotation corrected — long-lived
   refresh tokens are stable across refreshes.
 

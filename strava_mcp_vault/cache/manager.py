@@ -14,6 +14,7 @@ Vault vs Cache:
 import asyncio
 import logging
 import time
+from datetime import datetime
 
 METERS_PER_MILE = 1609.344
 
@@ -69,6 +70,23 @@ def _format_duration(seconds: int) -> str:
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
     return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
+def _iso_to_epoch(value: str | None) -> int | None:
+    """Convert an ISO date/datetime string to a Unix epoch int for Strava.
+
+    Strava's ``/athlete/activities`` endpoint accepts ``before`` and
+    ``after`` as epoch seconds. We accept the same ISO format we use
+    everywhere else (``"2026-01-01"`` or ``"2026-01-01T00:00:00Z"``) and
+    return ``None`` for unparseable input — the API call simply omits the
+    bound, which matches how the vault path treats missing filters.
+    """
+    if not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
 
 
 def _shape_activity(raw: dict) -> dict:
@@ -130,9 +148,13 @@ class CacheManager:
         """Return a shaped list of recent activities with optional filters.
 
         Local-first: reads from the vault if it has data.
-        Falls back to the API if the vault is empty (offset and filters are
-        only enforced on the vault path; the API fallback ignores them).
+        Falls back to the API if the vault is empty — filters are still
+        applied on the fallback path (``before``/``after`` are passed to
+        Strava natively; ``sport_type`` and ``has_power`` are applied
+        client-side after fetch).
         """
+        from strava_mcp_vault.sport_types import expand_sport_type
+
         vault_count = await self.db.get_vault_activity_count()
 
         if vault_count > 0:
@@ -146,16 +168,53 @@ class CacheManager:
             )
             shaped = [_shape_activity(a) for a in raw_activities]
         else:
-            # Vault empty: fall back to API (no filtering available)
-            key = f"activities:list:{count}"
+            # Vault empty: fall back to the Strava API. The list endpoint
+            # accepts before/after as epoch seconds; sport_type and
+            # has_power have no API equivalent and are applied client-side.
+            after_epoch = _iso_to_epoch(after)
+            before_epoch = _iso_to_epoch(before)
+            has_filters = bool(sport_type or after_epoch or before_epoch or has_power is not None)
+
+            # Cache key includes the full filter signature so unfiltered and
+            # filtered calls don't collide. Old "activities:list:N" entries
+            # from earlier versions become orphans (harmless; they TTL out).
+            key = (
+                f"activities:list:{count}:{offset}:{sport_type or ''}:"
+                f"{after or ''}:{before or ''}:{has_power}"
+            )
             category = "activities_list"
 
             cached = await self.db.get_cached(key)
             if cached is not None:
                 return cached
 
-            raw = await self.client.get_activities(per_page=min(count, 200))
-            shaped = [_shape_activity(a) for a in raw[:count]]
+            # When filters are active, fetch a wider page so client-side
+            # filtering can still return up to `count` results. One API call,
+            # capped at Strava's per_page max of 200.
+            fetch_size = 200 if has_filters else min(count, 200)
+            raw = await self.client.get_activities(
+                per_page=fetch_size,
+                after=after_epoch,
+                before=before_epoch,
+            )
+
+            # Client-side sport_type filter (supports aliases + comma lists).
+            allowed_sports = expand_sport_type(sport_type)
+            if allowed_sports is not None:
+                allowed = set(allowed_sports)
+                raw = [a for a in raw if (a.get("sport_type") or a.get("type")) in allowed]
+
+            # Client-side has_power filter — Strava embeds power fields in
+            # the list response when present, so this is just a presence
+            # check on the JSON blob.
+            if has_power is True:
+                raw = [a for a in raw if a.get("average_watts") is not None]
+            elif has_power is False:
+                raw = [a for a in raw if a.get("average_watts") is None]
+
+            # Apply offset + count after filtering.
+            sliced = raw[max(offset, 0) : max(offset, 0) + count]
+            shaped = [_shape_activity(a) for a in sliced]
 
             await self.db.set_cached(key, category, shaped, TTL[category])
 
