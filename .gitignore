@@ -8,3 +8,4 @@ data/
 .coverage
 coverage.xml
 .pytest_cache/
+.claude/
