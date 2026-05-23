@@ -1,6 +1,7 @@
 """Tests for stream_analysis.py — pure compute, no I/O."""
 
 from strava_mcp_vault.stream_analysis import (
+    compute_cardiac_drift,
     compute_decoupling,
     compute_power_curve,
     compute_zone_distribution,
@@ -9,6 +10,39 @@ from strava_mcp_vault.stream_analysis import (
     normalized_power,
     recommended_max_points,
 )
+
+MIN_DRIFT_DURATION_S = 1200  # 20 minutes
+
+
+def test_cardiac_drift_rising_hr():
+    hr = [130] * 600 + [150] * 600  # 20 min, drift +20bpm
+    watts = [200] * 1200
+    result = compute_cardiac_drift({"heartrate": hr, "watts": watts})
+    assert result["first_half"]["avg_hr"] == 130.0
+    assert result["second_half"]["avg_hr"] == 150.0
+    # hr_drift_pct = (150-130)/130 * 100 ≈ 15.38
+    assert abs(result["hr_drift_pct"] - 15.38) < 0.1
+
+
+def test_cardiac_drift_too_short_returns_error():
+    hr = [140] * 600  # 10 minutes
+    result = compute_cardiac_drift({"heartrate": hr})
+    assert result == {"error": "activity_too_short", "minimum_s": MIN_DRIFT_DURATION_S}
+
+
+def test_cardiac_drift_no_power_returns_partial():
+    """No watts stream → power-derived fields null + reason."""
+    hr = [130] * 600 + [150] * 600
+    result = compute_cardiac_drift({"heartrate": hr})
+    assert result["hr_drift_pct"] > 0
+    assert result["first_half"]["avg_power"] is None
+    assert result["second_half"]["avg_power"] is None
+    assert result["decoupling_pct"] is None
+
+
+def test_cardiac_drift_no_hr_returns_error():
+    result = compute_cardiac_drift({"watts": [200] * 1200})
+    assert result == {"error": "missing_required_stream", "required": "heartrate"}
 
 
 def test_downsample_no_cap_returns_full_data():

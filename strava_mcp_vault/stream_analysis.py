@@ -330,3 +330,64 @@ def compute_decoupling(
             "|decoupling| > 5% is the conventional threshold for aerobic decoupling."
         ),
     }
+
+
+MIN_DRIFT_DURATION_S = 1200  # 20 minutes
+
+
+def compute_cardiac_drift(streams: StreamDict) -> dict[str, Any]:
+    """First-half vs second-half HR (and NP/HR if power present).
+
+    Returns activity_too_short error if activity is less than 20 minutes.
+    Returns missing_required_stream error if no heartrate.
+    Power-derived fields are null + reason if no watts stream.
+    """
+    hr = streams.get("heartrate")
+    if not isinstance(hr, list) or not hr:
+        return {"error": "missing_required_stream", "required": "heartrate"}
+
+    total = len(hr)
+    if total < MIN_DRIFT_DURATION_S:
+        return {"error": "activity_too_short", "minimum_s": MIN_DRIFT_DURATION_S}
+
+    watts = streams.get("watts")
+    half = total // 2
+
+    hr1 = _segment_avg(hr, 0, half)
+    hr2 = _segment_avg(hr, half, total)
+    hr_drift_pct = ((hr2 - hr1) / hr1 * 100) if hr1 > 0 else 0.0
+
+    first: dict[str, Any] = {"avg_hr": round(hr1, 1), "avg_power": None, "np": None}
+    second: dict[str, Any] = {"avg_hr": round(hr2, 1), "avg_power": None, "np": None}
+    decoupling_pct: float | None = None
+
+    if isinstance(watts, list) and watts and not all(w in (None, 0) for w in watts):
+        w1 = [float(w) if w is not None else 0.0 for w in watts[:half]]
+        w2 = [float(w) if w is not None else 0.0 for w in watts[half:total]]
+        avg_p1 = sum(w1) / len(w1) if w1 else 0.0
+        avg_p2 = sum(w2) / len(w2) if w2 else 0.0
+        np1 = normalized_power(w1)
+        np2 = normalized_power(w2)
+        first["avg_power"] = round(avg_p1, 1)
+        first["np"] = round(np1, 1)
+        second["avg_power"] = round(avg_p2, 1)
+        second["np"] = round(np2, 1)
+        ratio1 = np1 / hr1 if hr1 > 0 else 0.0
+        ratio2 = np2 / hr2 if hr2 > 0 else 0.0
+        decoupling_pct = round(((ratio2 - ratio1) / ratio1 * 100), 2) if ratio1 > 0 else 0.0
+
+    return {
+        "duration_s": total,
+        "first_half": first,
+        "second_half": second,
+        "hr_drift_pct": round(hr_drift_pct, 2),
+        "decoupling_pct": decoupling_pct,
+        "threshold_5pct_exceeded": (
+            decoupling_pct is not None and abs(decoupling_pct) > 5.0
+        ),
+        "methodology": (
+            "First-half vs second-half split. HR drift = HR2/HR1 - 1. "
+            "Decoupling = (NP/HR_2 - NP/HR_1) / (NP/HR_1) * 100. "
+            "|decoupling| > 5% suggests aerobic decoupling."
+        ),
+    }
