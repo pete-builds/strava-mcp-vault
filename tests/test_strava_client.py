@@ -200,3 +200,17 @@ def test_rate_limit_remaining_parse():
     rl = c.rate_limit_remaining
     assert rl["short"]["usage"] == 15
     assert rl["long"]["usage"] == 300
+
+
+@respx.mock
+async def test_get_athlete_zones(client):
+    route = respx.get("https://www.strava.com/api/v3/athlete/zones").mock(
+        return_value=httpx.Response(200, json={
+            "heart_rate": {"custom_zones": False, "zones": [{"min": 0, "max": 115}]},
+            "power": {"zones": [{"min": 0, "max": 180}]},
+        })
+    )
+    result = await client.get_athlete_zones()
+    assert route.called
+    assert result["heart_rate"]["zones"][0]["max"] == 115
+    assert result["power"]["zones"][0]["max"] == 180

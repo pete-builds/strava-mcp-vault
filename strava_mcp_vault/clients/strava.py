@@ -205,3 +205,7 @@ class StravaClient(BaseClient):
     async def get_athlete_stats(self, athlete_id: int) -> dict:
         """GET /athletes/{id}/stats - returns the athlete's aggregate stats."""
         return await self._get(f"/athletes/{athlete_id}/stats")
+
+    async def get_athlete_zones(self) -> dict:
+        """GET /athlete/zones - returns HR and power zones if configured."""
+        return await self._get("/athlete/zones")
