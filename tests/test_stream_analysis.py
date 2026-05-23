@@ -1,6 +1,7 @@
 """Tests for stream_analysis.py — pure compute, no I/O."""
 
 from strava_mcp_vault.stream_analysis import (
+    compute_decoupling,
     compute_power_curve,
     compute_zone_distribution,
     downsample,
@@ -284,3 +285,59 @@ def test_power_curve_treats_none_as_zero():
     watts = [200, None, 200, None] * 100  # avg of real values = 200, with None=0 → 100
     result = compute_power_curve({"watts": watts}, durations=[10])
     assert result["avg_power"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# compute_decoupling
+# ---------------------------------------------------------------------------
+
+
+def test_decoupling_no_drift_returns_zero():
+    """Constant HR and power → 0% decoupling."""
+    hr = [140] * 600
+    watts = [200] * 600
+    result = compute_decoupling({"heartrate": hr, "watts": watts}, segment_minutes=None)
+    assert abs(result["decoupling_pct"]) < 0.01
+    assert result["threshold_5pct_exceeded"] is False
+    assert result["first_segment"]["avg_hr"] == 140.0
+    assert result["second_segment"]["avg_hr"] == 140.0
+
+
+def test_decoupling_rising_hr_falling_efficiency():
+    """HR rises in 2nd half, power stays → decoupling > 0."""
+    hr = [130] * 300 + [150] * 300  # 130 avg, then 150 avg
+    watts = [200] * 600  # constant
+    result = compute_decoupling({"heartrate": hr, "watts": watts}, segment_minutes=None)
+    # 1st: NP/HR = 200/130 = 1.538; 2nd: NP/HR = 200/150 = 1.333
+    # decoupling = (1.333 - 1.538) / 1.538 * 100 ≈ -13.3%
+    # Negative = aerobic decoupling (efficiency dropped)
+    assert result["decoupling_pct"] < -10
+
+
+def test_decoupling_missing_hr_returns_error():
+    result = compute_decoupling({"watts": [200] * 600}, segment_minutes=None)
+    assert result == {"error": "missing_required_stream", "required": "heartrate"}
+
+
+def test_decoupling_missing_watts_returns_error():
+    result = compute_decoupling({"heartrate": [140] * 600}, segment_minutes=None)
+    assert result == {"error": "missing_required_stream", "required": "watts"}
+
+
+def test_decoupling_custom_segment_minutes():
+    """segment_minutes=1 compares first 60s vs last 60s."""
+    hr = [130] * 60 + [140] * 600 + [150] * 60  # warmup, middle, last
+    watts = [200] * 720
+    result = compute_decoupling(
+        {"heartrate": hr, "watts": watts}, segment_minutes=1
+    )
+    # first 60s avg HR = 130; last 60s avg HR = 150
+    assert result["first_segment"]["avg_hr"] == 130.0
+    assert result["second_segment"]["avg_hr"] == 150.0
+
+
+def test_decoupling_threshold_5pct_marker():
+    hr = [130] * 300 + [150] * 300
+    watts = [200] * 600
+    result = compute_decoupling({"heartrate": hr, "watts": watts}, segment_minutes=None)
+    assert result["threshold_5pct_exceeded"] is True

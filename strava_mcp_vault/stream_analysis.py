@@ -262,3 +262,71 @@ def compute_power_curve(
         "points": points,
         "omitted": omitted,
     }
+
+
+def _segment_avg(values: list[float | int | None], start: int, end: int) -> float:
+    slice_ = [float(v) if v is not None else 0.0 for v in values[start:end]]
+    return sum(slice_) / len(slice_) if slice_ else 0.0
+
+
+def compute_decoupling(
+    streams: StreamDict,
+    segment_minutes: int | None,
+) -> dict[str, Any]:
+    """Pa:HR decoupling — NP/HR ratio drift between two segments.
+
+    If segment_minutes is None, splits in half. Otherwise compares first N min
+    vs last N min (assumes 1Hz sampling).
+    """
+    hr = streams.get("heartrate")
+    watts = streams.get("watts")
+    if not isinstance(hr, list) or not hr:
+        return {"error": "missing_required_stream", "required": "heartrate"}
+    if not isinstance(watts, list) or not watts:
+        return {"error": "missing_required_stream", "required": "watts"}
+
+    total = min(len(hr), len(watts))
+
+    if segment_minutes is None:
+        half = total // 2
+        s1_start, s1_end = 0, half
+        s2_start, s2_end = half, total
+    else:
+        window = segment_minutes * 60
+        s1_start, s1_end = 0, min(window, total)
+        s2_start, s2_end = max(0, total - window), total
+
+    hr1 = _segment_avg(hr, s1_start, s1_end)
+    hr2 = _segment_avg(hr, s2_start, s2_end)
+    watts1 = [float(w) if w is not None else 0.0 for w in watts[s1_start:s1_end]]
+    watts2 = [float(w) if w is not None else 0.0 for w in watts[s2_start:s2_end]]
+    np1 = normalized_power(watts1)
+    np2 = normalized_power(watts2)
+
+    ratio1 = np1 / hr1 if hr1 > 0 else 0.0
+    ratio2 = np2 / hr2 if hr2 > 0 else 0.0
+    decoupling = ((ratio2 - ratio1) / ratio1 * 100) if ratio1 > 0 else 0.0
+
+    return {
+        "segment_minutes": segment_minutes,
+        "first_segment": {
+            "start_s": s1_start,
+            "end_s": s1_end,
+            "avg_hr": round(hr1, 1),
+            "np": round(np1, 1),
+            "np_per_hr": round(ratio1, 3),
+        },
+        "second_segment": {
+            "start_s": s2_start,
+            "end_s": s2_end,
+            "avg_hr": round(hr2, 1),
+            "np": round(np2, 1),
+            "np_per_hr": round(ratio2, 3),
+        },
+        "decoupling_pct": round(decoupling, 2),
+        "threshold_5pct_exceeded": abs(decoupling) > 5.0,
+        "methodology": (
+            "Pa:HR decoupling. Compares NP/HR ratio between two segments. "
+            "|decoupling| > 5% is the conventional threshold for aerobic decoupling."
+        ),
+    }
