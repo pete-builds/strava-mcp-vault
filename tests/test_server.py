@@ -1,5 +1,6 @@
 """Tests for server.py validation helpers and tool functions."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -251,3 +252,48 @@ async def test_get_activity_streams_no_downsample_reason_none(mock_manager):
     )
     payload = json.loads(result)
     assert payload["downsample"]["reason"] == "none"
+
+
+# ── get_activity_streams: pre-flight size guard ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_size_guard_fires_when_oversize():
+    # 5 streams x 50_000 points x 10 bytes x 1.2 = 3MB → triggers guard
+    async def fake_normalized(activity_id, stream_types):
+        return {k: list(range(50_000)) for k in ["heartrate", "watts", "time", "altitude", "cadence"]}
+
+    m = AsyncMock()
+    m.get_streams_normalized = fake_normalized
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_activity_streams
+        result = await get_activity_streams(
+            activity_id=1,
+            stream_types="heartrate,watts,time,altitude,cadence",
+            response_format="json",
+        )
+    payload = json.loads(result)
+    assert payload["error"] == "response_too_large"
+    assert payload["original_points"] == 50_000
+    assert payload["recommended_max_points"] > 100
+    assert "max_points=" in payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_size_guard_bypassed_when_max_points_set():
+    async def fake_normalized(activity_id, stream_types):
+        return {k: list(range(50_000)) for k in ["heartrate", "watts", "time"]}
+
+    m = AsyncMock()
+    m.get_streams_normalized = fake_normalized
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_activity_streams
+        result = await get_activity_streams(
+            activity_id=1,
+            stream_types="heartrate,watts,time",
+            max_points=500,
+            response_format="json",
+        )
+    payload = json.loads(result)
+    assert "error" not in payload
+    assert payload["downsample"]["returned_points"] == 500

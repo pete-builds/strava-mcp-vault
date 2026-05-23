@@ -335,6 +335,28 @@ async def get_activity_streams(
                 "get_activity_streams",
                 ValueError(f"no requested streams available for activity {activity_id}"),
             )
+
+        # Pre-flight size guard
+        SIZE_GUARD_BYTES = 800_000
+        if max_points is None:
+            estimated = stream_analysis.estimate_response_bytes(streams)
+            if estimated > SIZE_GUARD_BYTES:
+                rec = stream_analysis.recommended_max_points(streams, target_bytes=SIZE_GUARD_BYTES)
+                original_points = max(len(v) for v in streams.values() if isinstance(v, list))
+                return _jsonify({
+                    "error": "response_too_large",
+                    "original_points": original_points,
+                    "estimated_bytes": estimated,
+                    "recommended_max_points": rec,
+                    "message": (
+                        f"Response would exceed 1MB ({estimated:,} bytes estimated). "
+                        f"Retry with max_points={rec} for downsampled data, "
+                        f"or use the purpose-built tools (strava_get_zone_distribution, "
+                        f"strava_get_power_curve, strava_get_cardiac_drift, "
+                        f"strava_get_hr_power_decoupling) which return small computed results."
+                    ),
+                })
+
         downsampled, downsample_meta = stream_analysis.downsample(streams, max_points)
         payload = {"downsample": downsample_meta, "streams": downsampled}
         if response_format == "json":
