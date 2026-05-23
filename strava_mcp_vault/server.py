@@ -798,27 +798,6 @@ async def get_hr_power_decoupling(
         return _tool_error("get_hr_power_decoupling", e)
 
 
-def main() -> None:
-    import uvicorn
-
-    from strava_mcp_vault.auth import maybe_add_auth, maybe_add_origin_check
-
-    # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
-    # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
-    # that serves POST (client -> server) and GET (server -> client SSE
-    # stream) on the same path.
-    app = mcp.streamable_http_app()
-    app = maybe_add_auth(app)
-    app = maybe_add_origin_check(app)
-    # Inside Docker, always bind 0.0.0.0 — docker-compose.yml's port
-    # publish already restricts which host interface is reachable (via
-    # MCP_BIND_HOST). Outside Docker (local Python dev), default to
-    # loopback for safety; users can override with MCP_BIND_HOST.
-    in_docker = os.path.exists("/.dockerenv")
-    host = "0.0.0.0" if in_docker else os.getenv("MCP_BIND_HOST", "127.0.0.1")
-    uvicorn.run(app, host=host, port=port)
-
-
 @mcp.tool(
     name="strava_get_cardiac_drift",
     annotations={
@@ -847,6 +826,27 @@ async def get_cardiac_drift(
         return format_cardiac_drift(result, activity_id)
     except Exception as e:
         return _tool_error("get_cardiac_drift", e)
+
+
+def main() -> None:
+    import uvicorn
+
+    from strava_mcp_vault.auth import maybe_add_auth, maybe_add_origin_check
+
+    # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
+    # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
+    # that serves POST (client -> server) and GET (server -> client SSE
+    # stream) on the same path.
+    app = mcp.streamable_http_app()
+    app = maybe_add_auth(app)
+    app = maybe_add_origin_check(app)
+    # Inside Docker, always bind 0.0.0.0 — docker-compose.yml's port
+    # publish already restricts which host interface is reachable (via
+    # MCP_BIND_HOST). Outside Docker (local Python dev), default to
+    # loopback for safety; users can override with MCP_BIND_HOST.
+    in_docker = os.path.exists("/.dockerenv")
+    host = "0.0.0.0" if in_docker else os.getenv("MCP_BIND_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

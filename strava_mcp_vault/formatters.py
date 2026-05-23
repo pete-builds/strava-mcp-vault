@@ -1209,4 +1209,3 @@ def format_cardiac_drift(data: dict, activity_id: int) -> str:
     lines.append("")
     lines.append(f"_{data.get('methodology', '')}_")
     return "\n".join(lines)
-    return "\n".join(lines)
