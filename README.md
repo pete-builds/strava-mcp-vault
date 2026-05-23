@@ -9,6 +9,10 @@ An unofficial, custom-built MCP server that lets your AI assistant talk to your 
 
 This is not affiliated with or endorsed by Strava. It's a personal project built to scratch an itch.
 
+## Supported clients
+
+This MCP server targets **Claude Desktop** and **Claude Code**. It is not designed for claude.ai web chat because it caches data in a local SQLite database (managed via Docker) that requires local filesystem access from the model's tool runtime.
+
 <!-- TODO: Replace with a real screenshot or GIF showing Claude asking a question
      and the tool returning a formatted activity table. Drop the asset into
      docs/images/ and update the path below. -->
@@ -63,6 +67,10 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 | `strava_set_activity_location` | Manually set (or clear) a display location on a vault activity | — |
 | `strava_delete_vault_activity` | Remove one or more activities from the local vault (does not affect Strava) | — |
 | `strava_sync_activities` | Sync activities into the vault. First run pulls full history; subsequent runs are incremental. | — |
+| `strava_get_zone_distribution` | Time spent in each HR / power zone (uses Strava-configured zones). Returns a small computed result. | 24 hours |
+| `strava_get_power_curve` | Best mean-max power at standard durations (5s, 30s, 1m, 5m, 20m, 1h, ...). Foundation for fitness comparison. | 24 hours |
+| `strava_get_cardiac_drift` | First-half vs second-half HR comparison, with optional Pa:HR decoupling when power is present. Requires ≥20 min activity. | 24 hours |
+| `strava_get_hr_power_decoupling` | Pa:HR decoupling ratio between two segments. Requires both heartrate and watts streams. | 24 hours |
 
 All read tools accept a `response_format` parameter: `"markdown"` (default) for human-readable output or `"json"` for programmatic use.
 
@@ -73,6 +81,20 @@ All read tools accept a `response_format` parameter: `"markdown"` (default) for 
 - **A single Strava type:** `"Ride"`, `"GravelRide"`, `"Run"` — matched literally.
 - **A comma-separated list:** `"Ride,GravelRide,MountainBikeRide"`.
 - **A lowercase category alias:** `"rides"` / `"cycling"` (all ride types), `"running"`, `"swims"`, `"walks"`, `"hikes"`, `"snow"`, `"ski"`. Aliases are case-sensitive on the lowercase form — CamelCase always stays literal.
+
+## Working with stream data
+
+The `strava_get_activity_streams` tool returns time-series data (HR, power, time, altitude, etc). By default it returns the full dataset, but the Claude harness caps tool results at ~1MB. For longer activities, this can be exceeded.
+
+**Three ways to handle it:**
+
+1. **Use the derived-metric tools** — `strava_get_zone_distribution`, `strava_get_power_curve`, `strava_get_cardiac_drift`, `strava_get_hr_power_decoupling`. Each computes its result server-side and returns a few KB. Prefer these whenever the question is "how was my X" rather than "give me the raw stream".
+
+2. **Downsample with `max_points`** — pass an integer to get evenly-spaced samples. Rule of thumb: ~500 for shape/trend, ~2000 for peak detection. All streams downsample with the same step so indices line up.
+
+3. **Export to disk with `export_path`** — pass a writable absolute path (or `""` for the default `~/.strava-mcp-vault/exports/` location). The full dataset is written to that file as JSON; the tool returns a small pointer. Read the file with the model's python tool. Bypasses the size guard entirely.
+
+If you call `strava_get_activity_streams` without `max_points` or `export_path` and the response would exceed ~800KB, the tool returns a structured error with a recommended `max_points` value to retry with. No data is returned silently truncated.
 
 ## Example Output
 
