@@ -1171,6 +1171,7 @@ def format_power_curve(data: dict, activity_id: int) -> str:
             "**Omitted (longer than activity):** "
             + ", ".join(f"{o['duration_s']}s" for o in omitted)
         )
+    return "\n".join(lines)
 
 
 def format_cardiac_drift(data: dict, activity_id: int) -> str:
