@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation for sharing one Strava API app across multiple services
   (independent refresh, shared seed token).
 
+- `strava_get_zone_distribution` — time-in-zone for HR and/or power, using athlete zones from Strava (24 h cache).
+- `strava_get_power_curve` — mean-max power at standard durations, with AP + NP for the activity.
+- `strava_get_cardiac_drift` — first-half vs second-half HR drift with optional Pa:HR decoupling when power data is present. Requires ≥ 20 min activity.
+- `strava_get_hr_power_decoupling` — Pa:HR decoupling between two segments (split in half by default, or first/last N minutes via `segment_minutes`).
+- `strava_get_activity_streams`: `max_points` parameter for evenly-spaced downsampling with cross-stream alignment.
+- `strava_get_activity_streams`: `export_path` parameter to write the full dataset to disk and return a small pointer (bypasses the size cap).
+- Pre-flight size guard on `strava_get_activity_streams`: when response would exceed ~800 KB and neither `max_points` nor `export_path` is set, returns a structured error with a recommended `max_points` value.
+- Defensive stream-type filter in `CacheManager.get_streams_normalized`: even if Strava returns extra paired streams, only requested types are surfaced.
+
 ### Changed
 - **Database migration:** `activities` table grows five denormalized columns
   — `average_watts`, `weighted_average_watts`, `max_watts`, `kilojoules`,
@@ -44,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   override.
 - `VAULT_DB_PATH` defaults to `./data/vault.db` outside Docker; `/app/data/vault.db`
   inside the container.
+
+- **`strava_get_activity_streams` markdown mode** now includes a downsample banner (when applicable) and an inline preview of up to 60 evenly-spaced points per stream, in addition to the existing min/max/avg summary.
 
 ### Fixed
 - **`query_vault` and `get_recent_activities` now use the same data source.**
@@ -69,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filtered results don't collide.
 - README warning about Strava refresh-token rotation corrected — long-lived
   refresh tokens are stable across refreshes.
+
+### Documentation
+- README: new "Supported clients" section clarifies this server targets Claude Desktop / Claude Code and is not designed for claude.ai web chat.
+- README: new "Working with stream data" section documents the size guard, downsampling, and disk export.
 
 ## [0.2.0]
 
