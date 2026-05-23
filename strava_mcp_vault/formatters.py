@@ -1117,6 +1117,33 @@ def format_zone_distribution(data: dict, activity_id: int) -> str:
     return "\n".join(lines)
 
 
+def format_decoupling(data: dict, activity_id: int) -> str:
+    """Format Pa:HR decoupling result as markdown."""
+    if data.get("error") == "missing_required_stream":
+        return (
+            f"## HR/Power Decoupling (Activity {activity_id})\n\n"
+            f"Missing required stream: **{data['required']}**. "
+            f"This metric requires both heartrate and watts data."
+        )
+    lines = [f"## HR/Power Decoupling (Activity {activity_id})\n"]
+    seg = data.get("segment_minutes")
+    lines.append(f"**Split:** {'first/second half' if seg is None else f'first/last {seg} min'}\n")
+    s1, s2 = data["first_segment"], data["second_segment"]
+    lines.append("| Segment | Avg HR | NP | NP/HR |")
+    lines.append("|---|---|---|---|")
+    lines.append(f"| 1st | {s1['avg_hr']:.0f} | {s1['np']:.0f} | {s1['np_per_hr']:.3f} |")
+    lines.append(f"| 2nd | {s2['avg_hr']:.0f} | {s2['np']:.0f} | {s2['np_per_hr']:.3f} |")
+    lines.append("")
+    lines.append(f"**Decoupling:** {data['decoupling_pct']:+.2f}%")
+    if data.get("threshold_5pct_exceeded"):
+        lines.append("⚠ Exceeded 5% threshold — aerobic decoupling indicated.")
+    else:
+        lines.append("✓ Under 5% threshold — efficiency held.")
+    lines.append("")
+    lines.append(f"_{data.get('methodology', '')}_")
+    return "\n".join(lines)
+
+
 def format_power_curve(data: dict, activity_id: int) -> str:
     if data.get("error") == "no_power_data":
         return f"## Power Curve (Activity {activity_id})\n\nNo power data in this activity."

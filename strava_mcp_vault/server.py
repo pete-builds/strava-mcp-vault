@@ -21,6 +21,7 @@ from strava_mcp_vault.formatters import (
     format_athlete_profile,
     format_athlete_stats,
     format_cache_stats,
+    format_decoupling,
     format_delete_activities,
     format_power_curve,
     format_recent_activities,
@@ -761,6 +762,39 @@ async def get_power_curve(
         return format_power_curve(result, activity_id)
     except Exception as e:
         return _tool_error("get_power_curve", e)
+
+
+@mcp.tool(
+    name="strava_get_hr_power_decoupling",
+    annotations={
+        "title": "Pa:HR decoupling between two segments",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_hr_power_decoupling(
+    activity_id: int,
+    segment_minutes: int | None = None,
+    response_format: Literal["json", "markdown"] = "markdown",
+) -> str:
+    """Pa:HR decoupling — change in NP/HR between two segments.
+
+    Requires both heartrate and watts streams. If segment_minutes is None,
+    splits the activity in half; otherwise compares first N minutes vs last
+    N minutes. |decoupling| > 5% is the conventional threshold for aerobic
+    decoupling.
+    """
+    try:
+        streams = await manager.get_streams_normalized(activity_id, "heartrate,watts")
+        result = stream_analysis.compute_decoupling(streams, segment_minutes)
+        result["activity_id"] = activity_id
+        if response_format == "json":
+            return _jsonify(result)
+        return format_decoupling(result, activity_id)
+    except Exception as e:
+        return _tool_error("get_hr_power_decoupling", e)
 
 
 def main() -> None:

@@ -435,3 +435,19 @@ async def test_get_power_curve_tool():
     payload = json.loads(result)
     assert payload["activity_id"] == 1
     assert all(p["best_watts"] == 200 for p in payload["points"])
+
+
+@pytest.mark.asyncio
+async def test_get_hr_power_decoupling_tool():
+    """Tool fetches streams, computes decoupling, returns json."""
+    # 600 samples at 140 bpm + 200 W → both segments identical → 0% decoupling
+    m = AsyncMock()
+    m.get_streams_normalized = AsyncMock(
+        return_value={"heartrate": [140] * 600, "watts": [200] * 600}
+    )
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_hr_power_decoupling
+        result = await get_hr_power_decoupling(activity_id=1, response_format="json")
+    payload = json.loads(result)
+    assert payload["activity_id"] == 1
+    assert payload["first_segment"]["avg_hr"] == 140.0

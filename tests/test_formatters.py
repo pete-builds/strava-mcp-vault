@@ -14,6 +14,7 @@ from strava_mcp_vault.formatters import (
     format_athlete_profile,
     format_athlete_stats,
     format_cache_stats,
+    format_decoupling,
     format_delete_activities,
     format_power_curve,
     format_recent_activities,
@@ -559,3 +560,27 @@ def test_format_power_curve_with_omitted():
     }
     md = format_power_curve(data, activity_id=42)
     assert "3600" in md or "omitted" in md.lower() or "skipped" in md.lower()
+
+
+# ── format_decoupling ─────────────────────────────────────────────────
+
+
+def test_format_decoupling_basic():
+    data = {
+        "activity_id": 42,
+        "segment_minutes": None,
+        "first_segment": {"start_s": 0, "end_s": 1800, "avg_hr": 140.0, "np": 215.0, "np_per_hr": 1.536},
+        "second_segment": {"start_s": 1800, "end_s": 3600, "avg_hr": 150.0, "np": 215.0, "np_per_hr": 1.433},
+        "decoupling_pct": -6.7,
+        "threshold_5pct_exceeded": True,
+        "methodology": "...",
+    }
+    md = format_decoupling(data, activity_id=42)
+    assert "-6.7" in md
+    assert "exceeds 5%" in md.lower() or "above threshold" in md.lower() or "exceeded" in md.lower()
+
+
+def test_format_decoupling_missing_stream():
+    data = {"error": "missing_required_stream", "required": "watts"}
+    md = format_decoupling(data, activity_id=42)
+    assert "watts" in md.lower() or "missing" in md.lower()
