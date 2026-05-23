@@ -26,6 +26,7 @@ from strava_mcp_vault.formatters import (
     format_recent_activities_compact,
     format_sync_result,
     format_vault_query,
+    format_zone_distribution,
 )
 
 load_dotenv()
@@ -674,6 +675,55 @@ async def sync_activities(days_back: int = 0, ctx: Context | None = None) -> str
         return format_sync_result(result)
     except Exception as e:
         return _tool_error("sync_activities", e)
+
+
+@mcp.tool(
+    name="strava_get_zone_distribution",
+    annotations={
+        "title": "Time spent in each HR / power zone",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_zone_distribution(
+    activity_id: int,
+    zone_type: Literal["hr", "power", "both"] = "both",
+    response_format: Literal["json", "markdown"] = "markdown",
+) -> str:
+    """Compute time spent in each HR and/or power zone for an activity.
+
+    Returns a small computed result (no raw streams) — safe against the 1MB cap.
+
+    Zones come from your Strava athlete zones config (cached 24h). If a zone
+    type isn't configured on Strava, that side of the response is null with a reason.
+    """
+    try:
+        keys = []
+        if zone_type in ("hr", "both"):
+            keys.append("heartrate")
+        if zone_type in ("power", "both"):
+            keys.append("watts")
+        keys.append("time")
+        stream_types = ",".join(keys)
+
+        streams = await manager.get_streams_normalized(activity_id, stream_types)
+        zones_raw = await manager.get_athlete_zones()
+
+        hr_zones = (zones_raw or {}).get("heart_rate", {}).get("zones") if zone_type in ("hr", "both") else None
+        power_zones = (zones_raw or {}).get("power", {}).get("zones") if zone_type in ("power", "both") else None
+
+        result = stream_analysis.compute_zone_distribution(
+            streams, hr_zones=hr_zones, power_zones=power_zones
+        )
+        result["activity_id"] = activity_id
+
+        if response_format == "json":
+            return _jsonify(result)
+        return format_zone_distribution(result, activity_id)
+    except Exception as e:
+        return _tool_error("get_zone_distribution", e)
 
 
 def main() -> None:

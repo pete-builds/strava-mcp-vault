@@ -1082,3 +1082,36 @@ def format_delete_activities(deleted: int, requested_ids: list[int]) -> str:
         lines.append(f"- **⚠️ Not found:** {not_found} (already removed or invalid ID)")
     lines.append(f"- **🏛️ IDs requested:** {', '.join(str(i) for i in requested_ids)}")
     return "\n".join(lines)
+
+
+def format_zone_distribution(data: dict, activity_id: int) -> str:
+    """Format zone distribution as markdown table per zone type."""
+    lines = [f"## Zone Distribution (Activity {activity_id})\n"]
+    duration_min = data.get("duration_s", 0) // 60
+    lines.append(f"**Total duration:** {duration_min} min\n")
+
+    def _zone_table(title: str, zones: list[dict]) -> list[str]:
+        out = [f"### {title}"]
+        out.append("| Zone | Name | Range | Time | % |")
+        out.append("|---|---|---|---|---|")
+        for z in zones:
+            mins = z["time_s"] // 60
+            secs = z["time_s"] % 60
+            out.append(
+                f"| Z{z['zone']} | {z['name']} | {z['min']}–{z['max']} | "
+                f"{mins}m {secs}s | {z['pct']:.1f}% |"
+            )
+        out.append("")
+        return out
+
+    has_any = False
+    if data.get("hr"):
+        lines.extend(_zone_table("HR Zones", data["hr"]))
+        has_any = True
+    if data.get("power"):
+        lines.extend(_zone_table("Power Zones", data["power"]))
+        has_any = True
+
+    if not has_any:
+        lines.append("No zones available — set HR max and/or FTP on Strava.")
+    return "\n".join(lines)

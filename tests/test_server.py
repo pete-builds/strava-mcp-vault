@@ -377,3 +377,43 @@ async def test_get_activity_streams_export_path_unwritable_errors():
         )
 
     assert "error" in result.lower() or "permission" in result.lower() or "no such" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_zone_distribution_tool():
+    """Tool wires together stream fetch, zones fetch, compute, and format."""
+    # heartrate stream: 600 samples at 120 bpm (1 Hz → 600 s total)
+    hr_stream = [120] * 600
+    fake_streams = {"heartrate": hr_stream, "time": list(range(600))}
+
+    fake_zones = {
+        "heart_rate": {
+            "zones": [
+                {"min": 0, "max": 115},
+                {"min": 115, "max": 152},
+                {"min": 152, "max": 171},
+                {"min": 171, "max": 190},
+                {"min": 190, "max": -1},
+            ]
+        },
+        "power": {"zones": [{"min": 0, "max": 180}]},
+    }
+
+    m = AsyncMock()
+    m.get_streams_normalized = AsyncMock(return_value=fake_streams)
+    m.get_athlete_zones = AsyncMock(return_value=fake_zones)
+
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_zone_distribution
+        result = await get_zone_distribution(
+            activity_id=1,
+            zone_type="hr",
+            response_format="json",
+        )
+
+    payload = json.loads(result)
+    assert payload["hr"] is not None
+    # All time should land in zone 2 (115–152), since HR=120 is in that range.
+    # time=[0..599] → 599 deltas of 1 s each → 599 s total in zone 2.
+    zone2 = next(z for z in payload["hr"] if z["zone"] == 2)
+    assert zone2["time_s"] == 599

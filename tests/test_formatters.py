@@ -19,6 +19,7 @@ from strava_mcp_vault.formatters import (
     format_recent_activities_compact,
     format_sync_result,
     format_vault_query,
+    format_zone_distribution,
 )
 
 # ── Helper functions ───────────────────────────────────────────────────
@@ -478,3 +479,42 @@ def test_format_delete_activities_success():
 def test_format_delete_activities_partial():
     result = format_delete_activities(1, [1, 2, 3])
     assert "Not found" in result
+
+
+# ── format_zone_distribution ──────────────────────────────────────────────────
+
+
+def test_format_zone_distribution_both_present():
+    data = {
+        "duration_s": 3600,
+        "hr": [
+            {"zone": 1, "name": "Recovery", "min": 0, "max": 115, "time_s": 600, "pct": 16.7},
+            {"zone": 2, "name": "Endurance", "min": 115, "max": 132, "time_s": 3000, "pct": 83.3},
+        ],
+        "power": [
+            {"zone": 1, "name": "Active Recovery", "min": 0, "max": 100, "time_s": 1800, "pct": 50.0},
+        ],
+    }
+    md = format_zone_distribution(data, activity_id=42)
+    assert "HR Zones" in md
+    assert "Recovery" in md
+    assert "16.7%" in md
+    assert "Power Zones" in md
+
+
+def test_format_zone_distribution_hr_only():
+    data = {
+        "duration_s": 3600,
+        "hr": [{"zone": 1, "name": "Recovery", "min": 0, "max": 115, "time_s": 3600, "pct": 100.0}],
+        "power": None,
+    }
+    md = format_zone_distribution(data, activity_id=42)
+    assert "HR Zones" in md
+    # Power section should not appear OR should show a clear absence indicator
+    assert "Power Zones" not in md or "no power" in md.lower()
+
+
+def test_format_zone_distribution_none_present():
+    data = {"duration_s": 3600, "hr": None, "power": None}
+    md = format_zone_distribution(data, activity_id=42)
+    assert "no zones" in md.lower() or "unavailable" in md.lower()
