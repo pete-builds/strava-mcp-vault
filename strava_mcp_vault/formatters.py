@@ -675,15 +675,32 @@ def format_activity_detail(activity: dict) -> str:
     return "\n".join(lines)
 
 
-def format_activity_streams(streams: dict | list, activity_id: int) -> str:
-    """Format activity streams as a compact markdown summary.
+def format_activity_streams(payload: dict | list, activity_id: int) -> str:
+    """Format activity streams as markdown with summary stats and downsample banner.
 
-    Streams can be a dict of {type: {data: [...], ...}} or a list of
-    stream objects with 'type' and 'data' keys.
+    Accepts either:
+      - new shape: {"downsample": {...}, "streams": {type: [data]}}
+      - legacy shapes: raw Strava list/dict (for backward compat)
     """
     lines = [f"## Activity Streams (ID: {activity_id})\n"]
+    downsample_meta = None
+    streams: dict | list = payload
 
-    # Normalize to dict form
+    if isinstance(payload, dict) and "streams" in payload and "downsample" in payload:
+        downsample_meta = payload["downsample"]
+        streams = payload["streams"]
+
+    # Banner when downsampled
+    if downsample_meta and downsample_meta.get("reason") == "user_requested":
+        orig = downsample_meta["original_points"]
+        ret = downsample_meta["returned_points"]
+        step = downsample_meta["step"]
+        lines.append(
+            f"> Downsampled {orig:,} -> {ret:,} points (every {step}th sample). "
+            f"Pass max_points=N to change. Pass export_path=/path/to/file.json for full data.\n"
+        )
+
+    # Normalize legacy shapes to dict form
     if isinstance(streams, list):
         stream_dict = {}
         for s in streams:
@@ -695,8 +712,6 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
         for k, v in streams.items():
             if isinstance(v, dict) and "data" in v:
                 normalized[k] = v["data"]
-            elif isinstance(v, list):
-                normalized[k] = v
             else:
                 normalized[k] = v
         streams = normalized
@@ -725,11 +740,24 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
             lines.append(f"- **Min:** {min_val:.1f}{unit}")
             lines.append(f"- **Max:** {max_val:.1f}{unit}")
             lines.append(f"- **Avg:** {avg_val:.1f}{unit}")
+
+            # Inline preview: up to 60 evenly-spaced points
+            preview = _stream_preview(numeric_data, max_preview=60)
+            lines.append(f"- **Preview ({len(preview)} pts):** `{preview}`")
             lines.append("")
         else:
             lines.append(f"**{stream_type}:** {len(data)} data points\n")
 
     return "\n".join(lines)
+
+
+def _stream_preview(data: list, max_preview: int = 60) -> list:
+    """Evenly-spaced sample of up to max_preview points for inline display."""
+    import math
+    if len(data) <= max_preview:
+        return [round(x, 1) if isinstance(x, float) else x for x in data]
+    step = math.ceil(len(data) / max_preview)
+    return [round(x, 1) if isinstance(x, float) else x for x in data[::step]]
 
 
 def _stream_unit(stream_type: str) -> str:

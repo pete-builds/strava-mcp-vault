@@ -8,6 +8,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
+from strava_mcp_vault import stream_analysis
 from strava_mcp_vault.cache.db import CacheDB
 from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
 from strava_mcp_vault.cache.manager import CacheManager
@@ -307,19 +308,38 @@ async def get_activity_streams(
     activity_id: int,
     stream_types: str = "heartrate,distance,altitude",
     response_format: Literal["json", "markdown"] = "markdown",
+    max_points: int | None = None,
 ) -> str:
     """Get time-series data for an activity (heart rate, elevation, etc).
 
     Args:
         activity_id: The Strava activity ID.
-        stream_types: Comma-separated stream types (e.g. heartrate,distance,altitude).
-        response_format: "markdown" (default, human-readable) or "json" (machine-readable).
+        stream_types: Comma-separated stream types (e.g. heartrate,distance,altitude,watts).
+        response_format: "markdown" (default, human-readable summary + downsampled preview)
+            or "json" (machine-readable: {downsample: {...}, streams: {...}}).
+        max_points: If set, downsample each stream to at most this many evenly-spaced
+            points. Picking a value: for trend/shape analysis use ~500; for peak detection
+            use ~2000; for full data use None (but be aware of the ~1MB tool-result cap).
+
+    For computed metrics (zones, drift, power curve, decoupling), prefer the
+    purpose-built tools — they return small results and avoid the size cap entirely.
     """
     try:
-        result = await manager.get_activity_streams(activity_id, stream_types)
+        streams = await manager.get_streams_normalized(activity_id, stream_types)
+        # Belt-and-suspenders: filter to requested keys again
+        requested = {t.strip() for t in stream_types.split(",")}
+        streams = {k: v for k, v in streams.items() if k in requested}
+
+        if not streams:
+            return _tool_error(
+                "get_activity_streams",
+                ValueError(f"no requested streams available for activity {activity_id}"),
+            )
+        downsampled, downsample_meta = stream_analysis.downsample(streams, max_points)
+        payload = {"downsample": downsample_meta, "streams": downsampled}
         if response_format == "json":
-            return _jsonify(result)
-        return format_activity_streams(result, activity_id)
+            return _jsonify(payload)
+        return format_activity_streams(payload, activity_id)
     except Exception as e:
         return _tool_error("get_activity_streams", e)
 

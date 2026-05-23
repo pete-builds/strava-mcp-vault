@@ -201,3 +201,53 @@ def test_format_error_401_without_scope_hint_says_reseed():
     msg = _tool_error("strava_get_recent_activities", err)
 
     assert "reseed" in msg.lower() or "re-seed" in msg.lower()
+
+
+# ── get_activity_streams: defensive filter + downsample ───────────────
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_filters_extra_streams(mock_manager):
+    """Defensive: even if manager returns extras, server filters to requested."""
+    mock_manager.get_streams_normalized.return_value = {
+        "heartrate": [120, 130],
+        "watts": [200, 210],
+    }
+    import json
+
+    from strava_mcp_vault.server import get_activity_streams
+    result = await get_activity_streams(
+        activity_id=1, stream_types="heartrate", response_format="json"
+    )
+    payload = json.loads(result)
+    assert "watts" not in payload["streams"]
+    assert payload["streams"]["heartrate"] == [120, 130]
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_downsample_block_present(mock_manager):
+    mock_manager.get_streams_normalized.return_value = {"heartrate": list(range(1000))}
+    import json
+
+    from strava_mcp_vault.server import get_activity_streams
+    result = await get_activity_streams(
+        activity_id=1, stream_types="heartrate", max_points=100, response_format="json"
+    )
+    payload = json.loads(result)
+    assert payload["downsample"]["original_points"] == 1000
+    assert payload["downsample"]["returned_points"] == 100
+    assert payload["downsample"]["reason"] == "user_requested"
+    assert len(payload["streams"]["heartrate"]) == 100
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_no_downsample_reason_none(mock_manager):
+    mock_manager.get_streams_normalized.return_value = {"heartrate": [120, 130, 140]}
+    import json
+
+    from strava_mcp_vault.server import get_activity_streams
+    result = await get_activity_streams(
+        activity_id=1, stream_types="heartrate", response_format="json"
+    )
+    payload = json.loads(result)
+    assert payload["downsample"]["reason"] == "none"
