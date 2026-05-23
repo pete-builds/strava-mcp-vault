@@ -297,3 +297,83 @@ async def test_get_activity_streams_size_guard_bypassed_when_max_points_set():
     payload = json.loads(result)
     assert "error" not in payload
     assert payload["downsample"]["returned_points"] == 500
+
+
+# ── get_activity_streams: export_path mode ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_export_path_writes_file(tmp_path):
+    """export_path mode writes full dataset to disk + returns pointer."""
+    export_file = tmp_path / "streams-out.json"
+
+    async def fake_normalized(activity_id, stream_types):
+        return {"heartrate": list(range(100)), "watts": list(range(100, 200))}
+
+    m = AsyncMock()
+    m.get_streams_normalized = fake_normalized
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_activity_streams
+        result = await get_activity_streams(
+            activity_id=42,
+            stream_types="heartrate,watts",
+            export_path=str(export_file),
+            response_format="json",
+        )
+
+    payload = json.loads(result)
+    assert payload["path"] == str(export_file)
+    assert payload["original_points"] == 100
+    assert payload["streams_written"] == ["heartrate", "watts"]
+    assert payload["schema_version"] == "1"
+    assert payload["size_bytes"] > 0
+    assert export_file.exists()
+
+    file_content = json.loads(export_file.read_text())
+    assert file_content["streams"]["heartrate"] == list(range(100))
+    assert file_content["streams"]["watts"] == list(range(100, 200))
+    assert file_content["downsample"]["reason"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_export_path_bypasses_size_guard(tmp_path):
+    """Even when oversize, export_path writes to disk regardless."""
+    export_file = tmp_path / "big.json"
+
+    async def fake_normalized(activity_id, stream_types):
+        return {k: list(range(50_000)) for k in ["heartrate", "watts", "time", "altitude", "cadence"]}
+
+    m = AsyncMock()
+    m.get_streams_normalized = fake_normalized
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_activity_streams
+        result = await get_activity_streams(
+            activity_id=1,
+            stream_types="heartrate,watts,time,altitude,cadence",
+            export_path=str(export_file),
+            response_format="json",
+        )
+
+    payload = json.loads(result)
+    assert "error" not in payload
+    assert export_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_get_activity_streams_export_path_unwritable_errors():
+    """Unwritable path errors cleanly (no silent fallback)."""
+    async def fake_normalized(activity_id, stream_types):
+        return {"heartrate": [120, 130, 140]}
+
+    m = AsyncMock()
+    m.get_streams_normalized = fake_normalized
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_activity_streams
+        result = await get_activity_streams(
+            activity_id=1,
+            stream_types="heartrate",
+            export_path="/nonexistent_root_dir_xyz/file.json",
+            response_format="json",
+        )
+
+    assert "error" in result.lower() or "permission" in result.lower() or "no such" in result.lower()

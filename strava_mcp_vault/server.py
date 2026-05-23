@@ -309,6 +309,7 @@ async def get_activity_streams(
     stream_types: str = "heartrate,distance,altitude",
     response_format: Literal["json", "markdown"] = "markdown",
     max_points: int | None = None,
+    export_path: str | None = None,
 ) -> str:
     """Get time-series data for an activity (heart rate, elevation, etc).
 
@@ -320,6 +321,12 @@ async def get_activity_streams(
         max_points: If set, downsample each stream to at most this many evenly-spaced
             points. Picking a value: for trend/shape analysis use ~500; for peak detection
             use ~2000; for full data use None (but be aware of the ~1MB tool-result cap).
+        export_path: If set, write the full dataset to this path as JSON and return
+            a small pointer ({path, size_bytes, original_points, streams_written,
+            schema_version}). Bypasses the size guard — disk has no 1MB cap.
+            Defaults to ~/.strava-mcp-vault/exports/{activity_id}-{streams}-{epoch}.json
+            if you pass an empty string. Useful in Claude Desktop / Claude Code where
+            the model's python tool can read the file directly.
 
     For computed metrics (zones, drift, power curve, decoupling), prefer the
     purpose-built tools — they return small results and avoid the size cap entirely.
@@ -335,6 +342,41 @@ async def get_activity_streams(
                 "get_activity_streams",
                 ValueError(f"no requested streams available for activity {activity_id}"),
             )
+
+        # Export path bypasses size guard — disk has no cap
+        if export_path is not None:
+            import time as _time
+            from pathlib import Path
+
+            if export_path == "":
+                default_dir = Path.home() / ".strava-mcp-vault" / "exports"
+                default_dir.mkdir(parents=True, exist_ok=True)
+                stream_key = "-".join(sorted(streams.keys()))
+                epoch = int(_time.time())
+                target = default_dir / f"{activity_id}-{stream_key}-{epoch}.json"
+            else:
+                target = Path(export_path).expanduser()
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+            original_points = max(len(v) for v in streams.values() if isinstance(v, list))
+            file_payload = {
+                "schema_version": "1",
+                "downsample": {
+                    "original_points": original_points,
+                    "returned_points": original_points,
+                    "step": 1,
+                    "reason": "none",
+                },
+                "streams": streams,
+            }
+            target.write_text(_jsonify(file_payload))
+            return _jsonify({
+                "path": str(target),
+                "size_bytes": target.stat().st_size,
+                "original_points": original_points,
+                "streams_written": sorted(streams.keys()),
+                "schema_version": "1",
+            })
 
         # Pre-flight size guard
         SIZE_GUARD_BYTES = 800_000
