@@ -216,3 +216,49 @@ def compute_zone_distribution(
         ]
 
     return out
+
+
+def _rolling_mean_max(values: list[float], window: int) -> float | None:
+    """Best mean of `window` consecutive samples. None if window > len."""
+    n = len(values)
+    if window > n or window <= 0:
+        return None
+    window_sum = sum(values[:window])
+    best = window_sum
+    for i in range(window, n):
+        window_sum += values[i] - values[i - window]
+        if window_sum > best:
+            best = window_sum
+    return best / window
+
+
+def compute_power_curve(
+    streams: StreamDict,
+    durations: list[int],
+) -> dict[str, Any]:
+    """Best mean-max power at each requested duration (seconds)."""
+    watts = streams.get("watts")
+    if not isinstance(watts, list) or not watts or all(w in (None, 0) for w in watts):
+        return {"error": "no_power_data"}
+
+    cleaned = [float(w) if w is not None else 0.0 for w in watts]
+    total = len(cleaned)
+    avg = sum(cleaned) / total
+    np = normalized_power(cleaned)
+
+    points = []
+    omitted = []
+    for d in durations:
+        best = _rolling_mean_max(cleaned, d)
+        if best is None:
+            omitted.append({"duration_s": d, "reason": "longer than activity"})
+        else:
+            points.append({"duration_s": d, "best_watts": round(best, 1)})
+
+    return {
+        "duration_s": total,
+        "avg_power": round(avg, 1),
+        "normalized_power": round(np, 1),
+        "points": points,
+        "omitted": omitted,
+    }

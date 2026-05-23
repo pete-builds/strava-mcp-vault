@@ -1,6 +1,7 @@
 """Tests for stream_analysis.py — pure compute, no I/O."""
 
 from strava_mcp_vault.stream_analysis import (
+    compute_power_curve,
     compute_zone_distribution,
     downsample,
     estimate_response_bytes,
@@ -230,3 +231,56 @@ def test_zone_distribution_power_zones_coggan_labels():
     assert names == ["Active Recovery", "Endurance", "Tempo", "Threshold",
                      "VO2 Max", "Anaerobic", "Neuromuscular"]
     assert result["power"][2]["time_s"] == 100  # 180 falls in Tempo (150-200)
+
+
+# ---------------------------------------------------------------------------
+# compute_power_curve
+# ---------------------------------------------------------------------------
+
+
+def test_power_curve_ascending_best_at_end():
+    """Ascending power: best 5s is the last 5 samples."""
+    watts = list(range(100))  # 0..99
+    result = compute_power_curve({"watts": watts}, durations=[5, 10])
+    # best 5s rolling avg in 0..99 = mean of last 5 = (95+96+97+98+99)/5 = 97
+    p5 = next(p for p in result["points"] if p["duration_s"] == 5)
+    assert p5["best_watts"] == 97
+    p10 = next(p for p in result["points"] if p["duration_s"] == 10)
+    assert p10["best_watts"] == 94.5  # mean(90..99) = 945/10
+
+
+def test_power_curve_constant_power():
+    watts = [200] * 600
+    result = compute_power_curve({"watts": watts}, durations=[5, 60, 300])
+    for p in result["points"]:
+        assert p["best_watts"] == 200
+
+
+def test_power_curve_duration_longer_than_activity_omitted():
+    watts = [200] * 60
+    result = compute_power_curve({"watts": watts}, durations=[30, 120, 3600])
+    durations_in = [p["duration_s"] for p in result["points"]]
+    assert 30 in durations_in
+    assert 120 not in durations_in
+    omitted = [o["duration_s"] for o in result["omitted"]]
+    assert 120 in omitted
+    assert 3600 in omitted
+
+
+def test_power_curve_no_watts_returns_error_marker():
+    result = compute_power_curve({"heartrate": [140] * 100}, durations=[5])
+    assert result == {"error": "no_power_data"}
+
+
+def test_power_curve_includes_avg_and_np():
+    watts = [200] * 600
+    result = compute_power_curve({"watts": watts}, durations=[5])
+    assert abs(result["avg_power"] - 200.0) < 0.01
+    assert abs(result["normalized_power"] - 200.0) < 0.01
+    assert result["duration_s"] == 600
+
+
+def test_power_curve_treats_none_as_zero():
+    watts = [200, None, 200, None] * 100  # avg of real values = 200, with None=0 → 100
+    result = compute_power_curve({"watts": watts}, durations=[10])
+    assert result["avg_power"] == 100.0
