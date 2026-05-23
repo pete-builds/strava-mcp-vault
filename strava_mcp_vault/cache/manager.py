@@ -25,6 +25,7 @@ TTL = {
     "activity_detail": 86400,  # 24 hours
     "activity_streams": 604800,  # 7 days
     "athlete_profile": 86400,  # 24 hours
+    "athlete_zones": 86400,  # 24 hours
     "athlete_stats": 86400,  # 1 day
 }
 
@@ -449,6 +450,19 @@ class CacheManager:
 
         result = await self.client.get_athlete()
 
+        await self.db.set_cached(key, category, result, TTL[category])
+        return result
+
+    async def get_athlete_zones(self) -> dict:
+        """Return athlete HR + power zones from Strava, cached 24 hours."""
+        key = "athlete:zones"
+        category = "athlete_zones"
+
+        cached = await self.db.get_cached(key)
+        if cached is not None:
+            return cached
+
+        result = await self.client.get_athlete_zones()
         await self.db.set_cached(key, category, result, TTL[category])
         return result
 

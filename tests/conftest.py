@@ -44,6 +44,7 @@ def mock_strava_client():
     client.get_activity.return_value = {}
     client.get_activity_streams.return_value = {}
     client.get_athlete_stats.return_value = {}
+    client.get_athlete_zones.return_value = {"heart_rate": None, "power": None}
     client.get_gear.return_value = {"name": "Trek Domane"}
     client.rate_limit_remaining = {
         "short": {"usage": 10, "limit": 100},

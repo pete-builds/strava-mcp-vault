@@ -189,3 +189,20 @@ async def test_gear_resolution(cache_manager, tmp_db, sample_activity):
     result = await cache_manager.get_recent_activities(count=5)
     # The mock client returns {"name": "Trek Domane"} for get_gear
     assert any(a.get("gear_name") == "Trek Domane" for a in result)
+
+
+async def test_get_athlete_zones_cached(cache_manager):
+    cache_manager.client.get_athlete_zones.return_value = {
+        "heart_rate": {"zones": [{"min": 0, "max": 115}, {"min": 115, "max": 132}]},
+        "power": {"zones": [{"min": 0, "max": 180}]},
+    }
+    first = await cache_manager.get_athlete_zones()
+    second = await cache_manager.get_athlete_zones()
+    assert first == second
+    cache_manager.client.get_athlete_zones.assert_called_once()
+
+
+async def test_get_athlete_zones_passes_through(cache_manager):
+    cache_manager.client.get_athlete_zones.return_value = {"heart_rate": None, "power": None}
+    result = await cache_manager.get_athlete_zones()
+    assert result == {"heart_rate": None, "power": None}
