@@ -80,3 +80,39 @@ def recommended_max_points(
         return 0
     raw = int(target_bytes / (num_streams * BYTES_PER_NUMBER * FRAMING_OVERHEAD))
     return max(raw, MIN_RECOMMENDED_POINTS)
+
+
+NP_WINDOW_SECONDS = 30  # standard Coggan 30-second rolling window
+
+
+def normalized_power(watts: list[float | int | None]) -> float:
+    """Compute normalized power per Coggan's algorithm.
+
+    Steps:
+      1. 30-second rolling average of power.
+      2. Raise each rolling-average value to the 4th power.
+      3. Take the mean of those 4th powers.
+      4. Take the 4th root.
+
+    Returns 0.0 for empty input. Falls back to simple average if activity is
+    shorter than the rolling window.
+    """
+    if not watts:
+        return 0.0
+
+    cleaned = [float(w) if w is not None else 0.0 for w in watts]
+    n = len(cleaned)
+
+    if n < NP_WINDOW_SECONDS:
+        return sum(cleaned) / n
+
+    rolling = []
+    window_sum = sum(cleaned[:NP_WINDOW_SECONDS])
+    rolling.append(window_sum / NP_WINDOW_SECONDS)
+    for i in range(NP_WINDOW_SECONDS, n):
+        window_sum += cleaned[i] - cleaned[i - NP_WINDOW_SECONDS]
+        rolling.append(window_sum / NP_WINDOW_SECONDS)
+
+    fourth_powers = [r**4 for r in rolling]
+    mean_fourth = sum(fourth_powers) / len(fourth_powers)
+    return mean_fourth**0.25

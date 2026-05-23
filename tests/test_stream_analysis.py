@@ -3,6 +3,7 @@
 from strava_mcp_vault.stream_analysis import (
     downsample,
     estimate_response_bytes,
+    normalized_power,
     recommended_max_points,
 )
 
@@ -113,3 +114,41 @@ def test_recommended_max_points_floors_at_minimum():
 
 def test_recommended_max_points_empty_streams():
     assert recommended_max_points({}, target_bytes=800_000) == 0
+
+
+def test_normalized_power_constant_equals_avg():
+    """For a constant-power effort, NP == avg power."""
+    watts = [200] * 600  # 10 minutes at 200W
+    np = normalized_power(watts)
+    assert abs(np - 200.0) < 0.01
+
+
+def test_normalized_power_shorter_than_window_returns_avg():
+    """Activities shorter than the 30s rolling window fall back to avg."""
+    watts = [100, 200, 300]
+    np = normalized_power(watts)
+    assert abs(np - 200.0) < 0.01
+
+
+def test_normalized_power_variable_higher_than_avg():
+    """Variable power produces NP > avg (NP penalizes spikes)."""
+    # 30s at 100W, then 30s at 300W, repeated 10 times
+    pattern = [100] * 30 + [300] * 30
+    watts = pattern * 10
+    avg = sum(watts) / len(watts)  # 200
+    np = normalized_power(watts)
+    assert np > avg
+    assert np < 300  # but less than the peak
+
+
+def test_normalized_power_empty_returns_zero():
+    assert normalized_power([]) == 0.0
+
+
+def test_normalized_power_skips_none_values():
+    """None values in watts (missing samples) are treated as zero."""
+    watts = [200, None, 200, None, 200] * 100
+    np = normalized_power(watts)
+    # Average of present values = 200, of all (treating None as 0) = 120
+    # NP is computed over all samples with None=0
+    assert np > 0
