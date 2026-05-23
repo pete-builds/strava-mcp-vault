@@ -1,6 +1,10 @@
 """Tests for stream_analysis.py — pure compute, no I/O."""
 
-from strava_mcp_vault.stream_analysis import downsample
+from strava_mcp_vault.stream_analysis import (
+    downsample,
+    estimate_response_bytes,
+    recommended_max_points,
+)
 
 
 def test_downsample_no_cap_returns_full_data():
@@ -67,3 +71,45 @@ def test_downsample_skips_non_list_values():
     result, meta = downsample(streams, max_points=2)
     assert result["heartrate"] == [1, 4]  # step=ceil(5/2)=3, indices 0,3 → values 1,4
     assert result["missing"] is None
+
+
+def test_estimate_response_bytes_empty():
+    assert estimate_response_bytes({}) == 0
+
+
+def test_estimate_response_bytes_single_stream():
+    # Rule of thumb: 10 bytes/number * count, plus 20% framing overhead
+    streams = {"heartrate": list(range(1000))}
+    est = estimate_response_bytes(streams)
+    # 1000 * 10 * 1.2 = 12_000
+    assert est == 12_000
+
+
+def test_estimate_response_bytes_multi_stream():
+    streams = {"heartrate": list(range(1000)), "watts": list(range(1000))}
+    # 2 streams * 1000 * 10 * 1.2 = 24_000
+    assert estimate_response_bytes(streams) == 24_000
+
+
+def test_estimate_response_bytes_ignores_non_list():
+    streams = {"heartrate": list(range(100)), "missing": None}
+    assert estimate_response_bytes(streams) == int(100 * 10 * 1.2)
+
+
+def test_recommended_max_points_basic():
+    # target_bytes / (num_streams * 10 * 1.2)
+    # 800_000 / (3 * 12) = 22_222
+    streams = {"heartrate": [0] * 10_000, "watts": [0] * 10_000, "time": [0] * 10_000}
+    rec = recommended_max_points(streams, target_bytes=800_000)
+    assert rec == 22_222
+
+
+def test_recommended_max_points_floors_at_minimum():
+    """Never recommend less than 100 (too lossy to be useful)."""
+    streams = {f"s{i}": [0] * 100_000 for i in range(50)}  # 50 streams
+    rec = recommended_max_points(streams, target_bytes=800_000)
+    assert rec >= 100
+
+
+def test_recommended_max_points_empty_streams():
+    assert recommended_max_points({}, target_bytes=800_000) == 0

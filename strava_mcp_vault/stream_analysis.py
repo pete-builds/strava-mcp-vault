@@ -50,3 +50,33 @@ def downsample(
         "step": step,
         "reason": "user_requested",
     }
+
+
+BYTES_PER_NUMBER = 10  # rough average for JSON-encoded floats/ints
+FRAMING_OVERHEAD = 1.2  # 20% for keys, brackets, MCP wrapping
+MIN_RECOMMENDED_POINTS = 100  # below this, the data is too lossy to be useful
+
+
+def estimate_response_bytes(streams: StreamDict) -> int:
+    """Estimate JSON-serialized byte size for a stream dict.
+
+    Used by the pre-flight size guard to decide whether to error or proceed.
+    Rough — based on number count × per-number byte estimate × framing factor.
+    """
+    total_numbers = sum(len(v) for v in streams.values() if isinstance(v, list))
+    return int(total_numbers * BYTES_PER_NUMBER * FRAMING_OVERHEAD)
+
+
+def recommended_max_points(
+    streams: StreamDict,
+    target_bytes: int = 800_000,
+) -> int:
+    """Compute a max_points value that would keep response under target_bytes.
+
+    Floors at MIN_RECOMMENDED_POINTS so callers always get a usable number.
+    """
+    num_streams = sum(1 for v in streams.values() if isinstance(v, list))
+    if num_streams == 0:
+        return 0
+    raw = int(target_bytes / (num_streams * BYTES_PER_NUMBER * FRAMING_OVERHEAD))
+    return max(raw, MIN_RECOMMENDED_POINTS)
