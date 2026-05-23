@@ -21,6 +21,7 @@ from strava_mcp_vault.formatters import (
     format_athlete_profile,
     format_athlete_stats,
     format_cache_stats,
+    format_cardiac_drift,
     format_decoupling,
     format_delete_activities,
     format_power_curve,
@@ -816,6 +817,36 @@ def main() -> None:
     in_docker = os.path.exists("/.dockerenv")
     host = "0.0.0.0" if in_docker else os.getenv("MCP_BIND_HOST", "127.0.0.1")
     uvicorn.run(app, host=host, port=port)
+
+
+@mcp.tool(
+    name="strava_get_cardiac_drift",
+    annotations={
+        "title": "Cardiac drift across an activity",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_cardiac_drift(
+    activity_id: int,
+    response_format: Literal["json", "markdown"] = "markdown",
+) -> str:
+    """First-half vs second-half HR drift, with optional Pa:HR decoupling if power present.
+
+    Requires heartrate stream; uses watts if available. Errors if activity is
+    shorter than 20 minutes.
+    """
+    try:
+        streams = await manager.get_streams_normalized(activity_id, "heartrate,watts")
+        result = stream_analysis.compute_cardiac_drift(streams)
+        result["activity_id"] = activity_id
+        if response_format == "json":
+            return _jsonify(result)
+        return format_cardiac_drift(result, activity_id)
+    except Exception as e:
+        return _tool_error("get_cardiac_drift", e)
 
 
 if __name__ == "__main__":

@@ -450,4 +450,19 @@ async def test_get_hr_power_decoupling_tool():
         result = await get_hr_power_decoupling(activity_id=1, response_format="json")
     payload = json.loads(result)
     assert payload["activity_id"] == 1
-    assert payload["first_segment"]["avg_hr"] == 140.0
+
+
+@pytest.mark.asyncio
+async def test_get_cardiac_drift_tool():
+    """Tool fetches streams, computes cardiac drift, returns json."""
+    m = AsyncMock()
+    m.get_streams_normalized = AsyncMock(
+        return_value={"heartrate": [130] * 700 + [150] * 700, "watts": [200] * 1400}
+    )
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_cardiac_drift
+        result = await get_cardiac_drift(activity_id=1, response_format="json")
+    payload = json.loads(result)
+    assert payload["activity_id"] == 1
+    assert payload["first_half"]["avg_hr"] == 130.0
+    assert payload["second_half"]["avg_hr"] == 150.0

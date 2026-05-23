@@ -584,3 +584,46 @@ def test_format_decoupling_missing_stream():
     data = {"error": "missing_required_stream", "required": "watts"}
     md = format_decoupling(data, activity_id=42)
     assert "watts" in md.lower() or "missing" in md.lower()
+
+
+# ── Cardiac drift formatter tests ──────────────────────────────────────────
+
+from strava_mcp_vault.formatters import format_cardiac_drift  # noqa: E402
+
+
+def test_format_cardiac_drift_with_power():
+    data = {
+        "activity_id": 42,
+        "duration_s": 3600,
+        "first_half": {"avg_hr": 140.0, "avg_power": 200.0, "np": 210.0},
+        "second_half": {"avg_hr": 152.0, "avg_power": 198.0, "np": 208.0},
+        "hr_drift_pct": 8.57,
+        "decoupling_pct": -3.5,
+        "threshold_5pct_exceeded": False,
+        "methodology": "...",
+    }
+    md = format_cardiac_drift(data, activity_id=42)
+    assert "8.57" in md
+    assert "140" in md and "152" in md
+
+
+def test_format_cardiac_drift_too_short():
+    data = {"error": "activity_too_short", "minimum_s": 1200}
+    md = format_cardiac_drift(data, activity_id=42)
+    assert "too short" in md.lower() or "minimum" in md.lower()
+
+
+def test_format_cardiac_drift_no_power_partial():
+    data = {
+        "activity_id": 42,
+        "duration_s": 1500,
+        "first_half": {"avg_hr": 140.0, "avg_power": None, "np": None},
+        "second_half": {"avg_hr": 148.0, "avg_power": None, "np": None},
+        "hr_drift_pct": 5.71,
+        "decoupling_pct": None,
+        "threshold_5pct_exceeded": False,
+        "methodology": "...",
+    }
+    md = format_cardiac_drift(data, activity_id=42)
+    assert "5.71" in md
+    assert "no power" in md.lower() or "n/a" in md.lower()

@@ -1171,4 +1171,41 @@ def format_power_curve(data: dict, activity_id: int) -> str:
             "**Omitted (longer than activity):** "
             + ", ".join(f"{o['duration_s']}s" for o in omitted)
         )
+
+
+def format_cardiac_drift(data: dict, activity_id: int) -> str:
+    """Format cardiac drift analysis as markdown."""
+    if data.get("error") == "activity_too_short":
+        mins = data.get("minimum_s", 1200) // 60
+        return (
+            f"## Cardiac Drift (Activity {activity_id})\n\n"
+            f"Activity too short for meaningful drift analysis (minimum {mins} min)."
+        )
+    if data.get("error") == "missing_required_stream":
+        return (
+            f"## Cardiac Drift (Activity {activity_id})\n\n"
+            f"Missing required stream: **{data['required']}**."
+        )
+    lines = [f"## Cardiac Drift (Activity {activity_id})\n"]
+    lines.append(f"**Duration:** {data['duration_s'] // 60} min\n")
+    s1, s2 = data["first_half"], data["second_half"]
+
+    def _power_cell(seg: dict) -> str:
+        if seg["avg_power"] is None:
+            return "N/A (no power)"
+        return f"{seg['avg_power']:.0f} W (NP {seg['np']:.0f})"
+
+    lines.append("| Half | Avg HR | Power |")
+    lines.append("|---|---|---|")
+    lines.append(f"| 1st | {s1['avg_hr']:.0f} | {_power_cell(s1)} |")
+    lines.append(f"| 2nd | {s2['avg_hr']:.0f} | {_power_cell(s2)} |")
+    lines.append("")
+    lines.append(f"**HR drift:** {data['hr_drift_pct']:+.2f}%")
+    if data.get("decoupling_pct") is not None:
+        lines.append(f"**Pa:HR decoupling:** {data['decoupling_pct']:+.2f}%")
+        if data["threshold_5pct_exceeded"]:
+            lines.append("Exceeded 5% threshold.")
+    lines.append("")
+    lines.append(f"_{data.get('methodology', '')}_")
+    return "\n".join(lines)
     return "\n".join(lines)
