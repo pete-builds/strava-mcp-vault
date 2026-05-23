@@ -206,3 +206,35 @@ async def test_get_athlete_zones_passes_through(cache_manager):
     cache_manager.client.get_athlete_zones.return_value = {"heart_rate": None, "power": None}
     result = await cache_manager.get_athlete_zones()
     assert result == {"heart_rate": None, "power": None}
+
+
+# ── get_streams_normalized ─────────────────────────────────────────────
+
+
+async def test_get_streams_normalized_from_list_form(cache_manager):
+    cache_manager.client.get_activity_streams.return_value = [
+        {"type": "heartrate", "data": [120, 130, 140]},
+        {"type": "watts", "data": [200, 210, 220]},
+    ]
+    result = await cache_manager.get_streams_normalized(123, "heartrate,watts")
+    assert result == {"heartrate": [120, 130, 140], "watts": [200, 210, 220]}
+
+
+async def test_get_streams_normalized_from_dict_form(cache_manager):
+    cache_manager.client.get_activity_streams.return_value = {
+        "heartrate": {"data": [120, 130], "original_size": 2},
+        "watts": {"data": [200, 210]},
+    }
+    result = await cache_manager.get_streams_normalized(123, "heartrate,watts")
+    assert result == {"heartrate": [120, 130], "watts": [200, 210]}
+
+
+async def test_get_streams_normalized_filters_to_requested(cache_manager):
+    """Defensive: Strava may return extra streams; we only keep requested."""
+    cache_manager.client.get_activity_streams.return_value = [
+        {"type": "heartrate", "data": [120, 130]},
+        {"type": "distance", "data": [0, 5.0]},  # not requested
+    ]
+    result = await cache_manager.get_streams_normalized(123, "heartrate")
+    assert "distance" not in result
+    assert result == {"heartrate": [120, 130]}

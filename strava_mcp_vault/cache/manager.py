@@ -482,6 +482,34 @@ class CacheManager:
         await self.db.set_cached(key, category, result, TTL[category])
         return result
 
+    async def get_streams_normalized(
+        self,
+        activity_id: int,
+        stream_types: str,
+    ) -> dict[str, list]:
+        """Fetch streams and return as flat {stream_type: [data]} dict.
+
+        Filters defensively to only the requested stream types — addresses
+        Strava returning extra paired streams (e.g. distance with key_type=time).
+        """
+        raw = await self.get_activity_streams(activity_id, stream_types)
+        requested = {t.strip() for t in stream_types.split(",")}
+
+        out: dict[str, list] = {}
+        if isinstance(raw, list):
+            for s in raw:
+                if isinstance(s, dict) and s.get("type") in requested:
+                    out[s["type"]] = s.get("data", [])
+        elif isinstance(raw, dict):
+            for k, v in raw.items():
+                if k not in requested:
+                    continue
+                if isinstance(v, dict) and "data" in v:
+                    out[k] = v["data"]
+                elif isinstance(v, list):
+                    out[k] = v
+        return out
+
     async def get_cache_stats(self) -> dict:
         """Return cache + vault statistics combined with API rate-limit info."""
         stats = await self.db.get_stats()
