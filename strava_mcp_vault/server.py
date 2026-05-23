@@ -22,6 +22,7 @@ from strava_mcp_vault.formatters import (
     format_athlete_stats,
     format_cache_stats,
     format_delete_activities,
+    format_power_curve,
     format_recent_activities,
     format_recent_activities_compact,
     format_sync_result,
@@ -724,6 +725,42 @@ async def get_zone_distribution(
         return format_zone_distribution(result, activity_id)
     except Exception as e:
         return _tool_error("get_zone_distribution", e)
+
+
+@mcp.tool(
+    name="strava_get_power_curve",
+    annotations={
+        "title": "Power curve (mean-max power at standard durations)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_power_curve(
+    activity_id: int,
+    durations: str = "5,15,30,60,300,600,1200,3600",
+    response_format: Literal["json", "markdown"] = "markdown",
+) -> str:
+    """Best mean-max power at each requested duration (seconds, comma-separated).
+
+    Foundation for fitness comparison across activities. Returns a small computed
+    result. Requires the activity to have a `watts` stream (power meter).
+    """
+    try:
+        streams = await manager.get_streams_normalized(activity_id, "watts")
+        try:
+            durations_list = [int(d.strip()) for d in durations.split(",") if d.strip()]
+        except ValueError as ve:
+            return _tool_error("get_power_curve", ve)
+
+        result = stream_analysis.compute_power_curve(streams, durations_list)
+        result["activity_id"] = activity_id
+        if response_format == "json":
+            return _jsonify(result)
+        return format_power_curve(result, activity_id)
+    except Exception as e:
+        return _tool_error("get_power_curve", e)
 
 
 def main() -> None:

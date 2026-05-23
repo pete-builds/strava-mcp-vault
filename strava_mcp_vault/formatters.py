@@ -1115,3 +1115,33 @@ def format_zone_distribution(data: dict, activity_id: int) -> str:
     if not has_any:
         lines.append("No zones available — set HR max and/or FTP on Strava.")
     return "\n".join(lines)
+
+
+def format_power_curve(data: dict, activity_id: int) -> str:
+    if data.get("error") == "no_power_data":
+        return f"## Power Curve (Activity {activity_id})\n\nNo power data in this activity."
+
+    lines = [f"## Power Curve (Activity {activity_id})\n"]
+    lines.append(f"**Duration:** {data['duration_s'] // 60} min")
+    lines.append(f"**Avg Power (AP):** {data['avg_power']:.0f} W")
+    lines.append(f"**Normalized Power (NP):** {data['normalized_power']:.0f} W\n")
+    lines.append("### Best mean-max power")
+    lines.append("| Duration | Best Watts |")
+    lines.append("|---|---|")
+    for p in data.get("points", []):
+        d = p["duration_s"]
+        if d < 60:
+            label = f"{d}s"
+        elif d < 3600:
+            label = f"{d // 60}m"
+        else:
+            label = f"{d // 3600}h"
+        lines.append(f"| {label} | {p['best_watts']:.0f} W |")
+    omitted = data.get("omitted", [])
+    if omitted:
+        lines.append("")
+        lines.append(
+            "**Omitted (longer than activity):** "
+            + ", ".join(f"{o['duration_s']}s" for o in omitted)
+        )
+    return "\n".join(lines)

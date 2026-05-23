@@ -417,3 +417,21 @@ async def test_get_zone_distribution_tool():
     # time=[0..599] → 599 deltas of 1 s each → 599 s total in zone 2.
     zone2 = next(z for z in payload["hr"] if z["zone"] == 2)
     assert zone2["time_s"] == 599
+
+
+@pytest.mark.asyncio
+async def test_get_power_curve_tool():
+    """Tool fetches watts stream, computes power curve, returns json."""
+    # 600 samples at 200 W → best at any duration == 200 W
+    m = AsyncMock()
+    m.get_streams_normalized = AsyncMock(return_value={"watts": [200] * 600})
+    with patch("strava_mcp_vault.server.manager", m):
+        from strava_mcp_vault.server import get_power_curve
+        result = await get_power_curve(
+            activity_id=1,
+            durations="5,60,300",
+            response_format="json",
+        )
+    payload = json.loads(result)
+    assert payload["activity_id"] == 1
+    assert all(p["best_watts"] == 200 for p in payload["points"])

@@ -15,6 +15,7 @@ from strava_mcp_vault.formatters import (
     format_athlete_stats,
     format_cache_stats,
     format_delete_activities,
+    format_power_curve,
     format_recent_activities,
     format_recent_activities_compact,
     format_sync_result,
@@ -518,3 +519,43 @@ def test_format_zone_distribution_none_present():
     data = {"duration_s": 3600, "hr": None, "power": None}
     md = format_zone_distribution(data, activity_id=42)
     assert "no zones" in md.lower() or "unavailable" in md.lower()
+
+
+# ── Power curve formatter tests ────────────────────────────────────────
+
+
+def test_format_power_curve_basic():
+    data = {
+        "activity_id": 42,
+        "duration_s": 3600,
+        "avg_power": 200.0,
+        "normalized_power": 215.5,
+        "points": [
+            {"duration_s": 5, "best_watts": 850},
+            {"duration_s": 60, "best_watts": 410},
+            {"duration_s": 1200, "best_watts": 280},
+        ],
+        "omitted": [],
+    }
+    md = format_power_curve(data, activity_id=42)
+    assert "850" in md
+    assert "Avg Power" in md or "AP" in md
+    assert "Normalized Power" in md or "NP" in md
+
+
+def test_format_power_curve_no_data():
+    md = format_power_curve({"error": "no_power_data"}, activity_id=42)
+    assert "no power" in md.lower()
+
+
+def test_format_power_curve_with_omitted():
+    data = {
+        "activity_id": 42,
+        "duration_s": 600,
+        "avg_power": 200.0,
+        "normalized_power": 210.0,
+        "points": [{"duration_s": 5, "best_watts": 800}],
+        "omitted": [{"duration_s": 3600, "reason": "longer than activity"}],
+    }
+    md = format_power_curve(data, activity_id=42)
+    assert "3600" in md or "omitted" in md.lower() or "skipped" in md.lower()
