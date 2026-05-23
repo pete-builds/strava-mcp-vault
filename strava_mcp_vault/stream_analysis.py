@@ -83,6 +83,11 @@ def recommended_max_points(
 
 
 NP_WINDOW_SECONDS = 30  # standard Coggan 30-second rolling window
+HR_ZONE_LABELS_5 = ["Recovery", "Endurance", "Tempo", "Threshold", "VO2 Max"]
+POWER_ZONE_LABELS_7 = [
+    "Active Recovery", "Endurance", "Tempo", "Threshold",
+    "VO2 Max", "Anaerobic", "Neuromuscular",
+]
 
 
 def normalized_power(watts: list[float | int | None]) -> float:
@@ -116,3 +121,98 @@ def normalized_power(watts: list[float | int | None]) -> float:
     fourth_powers = [r**4 for r in rolling]
     mean_fourth = sum(fourth_powers) / len(fourth_powers)
     return mean_fourth**0.25
+
+
+def _zone_labels(zones: list[dict]) -> list[str]:
+    n = len(zones)
+    if n == 5:
+        return HR_ZONE_LABELS_5
+    if n == 7:
+        return POWER_ZONE_LABELS_7
+    return [f"Z{i + 1}" for i in range(n)]
+
+
+def _sample_deltas(streams: StreamDict, total_samples: int) -> list[float]:
+    """Per-sample seconds. Uses time stream deltas if present, else 1s."""
+    time_stream = streams.get("time")
+    if not isinstance(time_stream, list) or len(time_stream) < 2:
+        return [1.0] * total_samples
+    deltas = [0.0]
+    for i in range(1, len(time_stream)):
+        deltas.append(float(time_stream[i] - time_stream[i - 1]))
+    while len(deltas) < total_samples:
+        deltas.append(1.0)
+    return deltas[:total_samples]
+
+
+def _bucket_into_zones(
+    values: list[float | int | None],
+    zones: list[dict],
+    deltas: list[float],
+) -> list[float]:
+    """Return seconds spent in each zone, given per-sample values + deltas."""
+    bucket = [0.0] * len(zones)
+    for v, dt in zip(values, deltas):
+        if v is None:
+            continue
+        for i, z in enumerate(zones):
+            if v >= z["min"] and v < z["max"]:
+                bucket[i] += dt
+                break
+        else:
+            # value at or above the last zone's max — count in top zone
+            bucket[-1] += dt
+    return bucket
+
+
+def compute_zone_distribution(
+    streams: StreamDict,
+    hr_zones: list[dict] | None,
+    power_zones: list[dict] | None,
+) -> dict[str, Any]:
+    """Time spent in each HR and/or power zone.
+
+    Returns {duration_s, hr: [...] | None, power: [...] | None}.
+    """
+    hr = streams.get("heartrate")
+    watts = streams.get("watts")
+    total = max(len(hr) if isinstance(hr, list) else 0,
+                len(watts) if isinstance(watts, list) else 0)
+    deltas = _sample_deltas(streams, total)
+    duration_s = int(sum(deltas))
+
+    out: dict[str, Any] = {"duration_s": duration_s, "hr": None, "power": None}
+
+    if hr_zones and isinstance(hr, list) and hr:
+        seconds = _bucket_into_zones(hr, hr_zones, deltas)
+        total_hr_s = sum(seconds) or 1.0
+        labels = _zone_labels(hr_zones)
+        out["hr"] = [
+            {
+                "zone": i + 1,
+                "name": labels[i],
+                "min": z["min"],
+                "max": z["max"],
+                "time_s": int(round(seconds[i])),
+                "pct": round(seconds[i] / total_hr_s * 100, 1),
+            }
+            for i, z in enumerate(hr_zones)
+        ]
+
+    if power_zones and isinstance(watts, list) and watts:
+        seconds = _bucket_into_zones(watts, power_zones, deltas)
+        total_p_s = sum(seconds) or 1.0
+        labels = _zone_labels(power_zones)
+        out["power"] = [
+            {
+                "zone": i + 1,
+                "name": labels[i],
+                "min": z["min"],
+                "max": z["max"],
+                "time_s": int(round(seconds[i])),
+                "pct": round(seconds[i] / total_p_s * 100, 1),
+            }
+            for i, z in enumerate(power_zones)
+        ]
+
+    return out

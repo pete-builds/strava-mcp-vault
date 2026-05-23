@@ -1,6 +1,7 @@
 """Tests for stream_analysis.py — pure compute, no I/O."""
 
 from strava_mcp_vault.stream_analysis import (
+    compute_zone_distribution,
     downsample,
     estimate_response_bytes,
     normalized_power,
@@ -152,3 +153,80 @@ def test_normalized_power_skips_none_values():
     # Average of present values = 200, of all (treating None as 0) = 120
     # NP is computed over all samples with None=0
     assert np > 0
+
+
+# ---------------------------------------------------------------------------
+# compute_zone_distribution
+# ---------------------------------------------------------------------------
+
+HR_ZONES_5 = [
+    {"min": 0, "max": 115},
+    {"min": 115, "max": 132},
+    {"min": 132, "max": 152},
+    {"min": 152, "max": 171},
+    {"min": 171, "max": 220},
+]
+
+
+def test_zone_distribution_all_in_one_zone():
+    """100 samples of HR=140 → 100% in zone 3 (Tempo)."""
+    streams = {"heartrate": [140] * 100}
+    result = compute_zone_distribution(streams, hr_zones=HR_ZONES_5, power_zones=None)
+    assert result["hr"][2]["time_s"] == 100
+    assert result["hr"][2]["pct"] == 100.0
+    assert result["hr"][0]["time_s"] == 0
+    assert sum(z["time_s"] for z in result["hr"]) == 100
+
+
+def test_zone_distribution_uses_time_stream_for_deltas():
+    """If time stream present, use actual seconds between samples."""
+    # 5 samples over 10s, all HR=140 → zone 3
+    streams = {"heartrate": [140] * 5, "time": [0, 2, 5, 7, 10]}
+    result = compute_zone_distribution(streams, hr_zones=HR_ZONES_5, power_zones=None)
+    assert result["hr"][2]["time_s"] == 10
+    assert result["duration_s"] == 10
+
+
+def test_zone_distribution_zone_labels_5_zone_hr():
+    streams = {"heartrate": [100] * 50}
+    result = compute_zone_distribution(streams, hr_zones=HR_ZONES_5, power_zones=None)
+    assert result["hr"][0]["name"] == "Recovery"
+    assert result["hr"][1]["name"] == "Endurance"
+    assert result["hr"][2]["name"] == "Tempo"
+    assert result["hr"][3]["name"] == "Threshold"
+    assert result["hr"][4]["name"] == "VO2 Max"
+
+
+def test_zone_distribution_falls_back_to_numeric_labels():
+    """Non-5/7-zone counts get Z1, Z2, ..."""
+    three_zones = [{"min": 0, "max": 100}, {"min": 100, "max": 150}, {"min": 150, "max": 220}]
+    streams = {"heartrate": [120] * 10}
+    result = compute_zone_distribution(streams, hr_zones=three_zones, power_zones=None)
+    names = [z["name"] for z in result["hr"]]
+    assert names == ["Z1", "Z2", "Z3"]
+
+
+def test_zone_distribution_no_hr_zones_returns_null():
+    streams = {"heartrate": [140] * 100}
+    result = compute_zone_distribution(streams, hr_zones=None, power_zones=None)
+    assert result["hr"] is None
+
+
+def test_zone_distribution_no_hr_stream_returns_null():
+    streams = {"watts": [200] * 100}
+    result = compute_zone_distribution(streams, hr_zones=HR_ZONES_5, power_zones=None)
+    assert result["hr"] is None
+
+
+def test_zone_distribution_power_zones_coggan_labels():
+    coggan = [
+        {"min": 0, "max": 100}, {"min": 100, "max": 150}, {"min": 150, "max": 200},
+        {"min": 200, "max": 250}, {"min": 250, "max": 300}, {"min": 300, "max": 400},
+        {"min": 400, "max": 9999},
+    ]
+    streams = {"watts": [180] * 100}
+    result = compute_zone_distribution(streams, hr_zones=None, power_zones=coggan)
+    names = [z["name"] for z in result["power"]]
+    assert names == ["Active Recovery", "Endurance", "Tempo", "Threshold",
+                     "VO2 Max", "Anaerobic", "Neuromuscular"]
+    assert result["power"][2]["time_s"] == 100  # 180 falls in Tempo (150-200)
