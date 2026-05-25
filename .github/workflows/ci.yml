@@ -33,6 +33,7 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+          retention-days: 7
 
   docker-build:
     runs-on: ubuntu-latest
