@@ -6,12 +6,12 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from cache.db import CacheDB
-from cache.geocode import forward_geocode, reverse_geocode_many
-from cache.manager import CacheManager
-from clients.strava import StravaClient
-from exceptions import VaultError
-from formatters import (
+from strava_mcp_vault.cache.db import CacheDB
+from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
+from strava_mcp_vault.cache.manager import CacheManager
+from strava_mcp_vault.clients.strava import StravaClient
+from strava_mcp_vault.exceptions import VaultError
+from strava_mcp_vault.formatters import (
     format_activities_near,
     format_activity_detail,
     format_activity_streams,
@@ -350,10 +350,11 @@ async def sync_activities(days_back: int = 0) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Serve the MCP app over streamable HTTP. Console-script entry point."""
     import uvicorn
 
-    from auth import maybe_add_auth
+    from strava_mcp_vault.auth import maybe_add_auth
 
     # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
     # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
@@ -362,3 +363,7 @@ if __name__ == "__main__":
     app = mcp.streamable_http_app()
     app = maybe_add_auth(app)
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+if __name__ == "__main__":
+    main()

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import aiosqlite
 
-from cache.encryption import decrypt_token, encrypt_token
+from strava_mcp_vault.cache.encryption import decrypt_token, encrypt_token
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

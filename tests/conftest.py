@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cache.db import CacheDB
+from strava_mcp_vault.cache.db import CacheDB
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def mock_strava_client():
 @pytest.fixture
 async def cache_manager(tmp_db, mock_strava_client):
     """Create a CacheManager with a real DB and mocked client."""
-    from cache.manager import CacheManager
+    from strava_mcp_vault.cache.manager import CacheManager
 
     return CacheManager(tmp_db, mock_strava_client)
 

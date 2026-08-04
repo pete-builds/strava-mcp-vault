@@ -222,13 +222,16 @@ Running locally without Docker:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 cp .env.example .env
 # Edit .env, set VAULT_DB_PATH=./data/vault.db
-python server.py
+strava-mcp-vault
 ```
 
-Requires Python 3.13+.
+Requires Python 3.11+.
+
+Run the tests with `pytest`, and the linters with `ruff check .` and
+`ruff format --check .`. Both run in CI.
 
 ## Troubleshooting
 

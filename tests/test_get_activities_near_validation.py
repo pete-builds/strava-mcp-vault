@@ -1,4 +1,4 @@
-from server import _validate_radius_miles
+from strava_mcp_vault.server import _validate_radius_miles
 
 
 def test_radius_validation_bounds():

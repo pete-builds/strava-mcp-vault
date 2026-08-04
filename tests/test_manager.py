@@ -1,6 +1,6 @@
 """Tests for cache/manager.py."""
 
-from cache.manager import _format_duration, _shape_activity
+from strava_mcp_vault.cache.manager import _format_duration, _shape_activity
 
 # ── Helper functions ───────────────────────────────────────────────────
 

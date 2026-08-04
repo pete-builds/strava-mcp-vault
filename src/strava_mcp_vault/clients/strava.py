@@ -4,8 +4,8 @@ import time
 
 import httpx
 
-from clients.base import BaseClient
-from exceptions import RateLimitError, StravaAPIError
+from strava_mcp_vault.clients.base import BaseClient
+from strava_mcp_vault.exceptions import RateLimitError, StravaAPIError
 
 logger = logging.getLogger(__name__)
 
