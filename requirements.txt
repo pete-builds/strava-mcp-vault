@@ -3,4 +3,4 @@ httpx==0.28.1
 aiosqlite==0.22.1
 python-dotenv==1.2.2
 uvicorn==0.52.0
-cryptography==48.0.1
+cryptography==49.0.0
