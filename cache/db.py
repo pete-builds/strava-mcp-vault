@@ -27,6 +27,14 @@ class CacheDB:
 
     async def init(self):
         self._db = await aiosqlite.connect(self.db_path)
+        # WAL journal mode lets background writers (e.g. the nightly cron
+        # sync in ~/scripts/strava-nightly-sync.sh) share the DB with the
+        # live MCP server without "database is locked" collisions. The
+        # mode is stored in the DB file header, so this PRAGMA is a no-op
+        # once the DB is already WAL; kept in init so a fresh vault.db
+        # (new volume, DR rebuild) comes up correctly.
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS cache (
                 cache_key TEXT PRIMARY KEY,
