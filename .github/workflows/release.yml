@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build + Push image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify docker-compose.yml points at the version being released
+        # This repo has no [project] version in pyproject.toml, so the pinned
+        # tag in docker-compose.yml is the only version surface. If it does not
+        # match the git tag, nix1 would pull an image this release never built.
+        # Fail closed: GHCR tags are cheap to re-push, a wrong compose is not.
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 - <<'PYEOF'
+          import os
+          import sys
+
+          import yaml
+
+          version = os.environ["REF_NAME"].removeprefix("v")
+          expected = f"ghcr.io/{os.environ['GITHUB_REPOSITORY'].lower()}:{version}"
+
+          # Parse the YAML key rather than grepping the file: the surrounding
+          # comments also contain an image reference, and a text search would
+          # happily match a stale one and pass.
+          with open("docker-compose.yml") as fh:
+              compose = yaml.safe_load(fh)
+
+          actual = compose["services"]["strava-mcp-vault"].get("image")
+          if actual != expected:
+              print(f"::error::docker-compose.yml pins '{actual}', expected '{expected}'")
+              print("::error::Bump the compose image tag in a commit BEFORE cutting the tag.")
+              sys.exit(1)
+
+          print(f"  ok  docker-compose.yml pins {actual}")
+          PYEOF
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  github-release:
+    name: GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
