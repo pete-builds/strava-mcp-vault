@@ -32,5 +32,10 @@ def check() -> int:
         return 1
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point. Exits 0 when healthy, 1 otherwise."""
     sys.exit(check())
+
+
+if __name__ == "__main__":
+    main()

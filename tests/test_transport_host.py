@@ -56,13 +56,13 @@ def _post_initialize(app):
     _startup() is stubbed out: it wants live Strava credentials and a database,
     and none of that is what these tests are checking.
     """
-    with patch("server._startup", AsyncMock()), TestClient(app) as client:
+    with patch("strava_mcp_vault.server._startup", AsyncMock()), TestClient(app) as client:
         return client.post("/mcp", headers=MCP_HEADERS, json=INITIALIZE_REQUEST)
 
 
 def test_http_host_is_not_loopback():
     """The configured bind host must not trip the SDK's loopback check."""
-    from server import HTTP_HOST
+    from strava_mcp_vault.server import HTTP_HOST
 
     assert HTTP_HOST not in SDK_LOOPBACK_HOSTS
     assert not ipaddress.ip_address(HTTP_HOST).is_loopback
@@ -70,7 +70,7 @@ def test_http_host_is_not_loopback():
 
 def test_lan_client_is_not_rejected():
     """A LAN-style Host header must get a real MCP response, not a 421."""
-    from server import build_app
+    from strava_mcp_vault.server import build_app
 
     response = _post_initialize(build_app())
 
@@ -91,7 +91,7 @@ def test_loopback_default_would_reject_lan_client():
     test_lan_client_is_not_rejected guards against. If this test ever stops
     failing that way, the guard above has gone blind and needs rewriting.
     """
-    from server import mcp
+    from strava_mcp_vault.server import mcp
 
     response = _post_initialize(mcp.streamable_http_app())
 

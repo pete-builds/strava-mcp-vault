@@ -2,7 +2,7 @@
 
 from cryptography.fernet import Fernet
 
-import cache.encryption as enc
+import strava_mcp_vault.cache.encryption as enc
 
 
 def _reset_encryption():

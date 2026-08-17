@@ -1,19 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.30.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "strava-mcp-vault"
+version = "0.2.0"
+description = "Strava MCP server with SQLite caching, automatic token refresh, and rate limit awareness."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Pete Stergion", email = "pstergion@gmail.com" }]
+requires-python = ">=3.11"
+keywords = ["mcp", "strava", "fastmcp", "claude-code", "fitness"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# The only dependency surface in this repo. requirements.txt and
+# requirements-dev.txt used to carry these pins in parallel; two surfaces drift,
+# so they are deleted and the image, CI, and Dependabot all read this table.
+dependencies = [
+    "mcp[cli]==2.0.0",
+    "httpx==0.28.1",
+    "aiosqlite==0.22.1",
+    "python-dotenv==1.2.2",
+    "uvicorn==0.52.1",
+    "cryptography==50.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov>=7.1.0",
+    "respx==0.23.1",
+    "ruff==0.16.2",
+]
+
+[project.scripts]
+strava-mcp-vault = "strava_mcp_vault.server:main"
+strava-mcp-vault-healthcheck = "strava_mcp_vault.healthcheck:main"
+
+[project.urls]
+Homepage = "https://github.com/pete-builds/strava-mcp-vault"
+Repository = "https://github.com/pete-builds/strava-mcp-vault"
+Issues = "https://github.com/pete-builds/strava-mcp-vault/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strava_mcp_vault"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = "test_*.py"
 
 [tool.ruff]
-target-version = "py313"
+# Matches requires-python so pyupgrade does not rewrite to syntax the declared
+# floor cannot parse.
+target-version = "py311"
 line-length = 100
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]
 
 [tool.coverage.run]
-source = ["cache", "clients", "formatters", "auth", "server"]
-omit = ["tests/*", "healthcheck.py"]
+source = ["strava_mcp_vault"]
+omit = ["tests/*", "src/strava_mcp_vault/healthcheck.py"]
 
 [tool.coverage.report]
 fail_under = 70

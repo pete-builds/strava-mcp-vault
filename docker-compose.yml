@@ -28,7 +28,7 @@ services:
       - strava-data:/app/data
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "python", "healthcheck.py"]
+      test: ["CMD", "strava-mcp-vault-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

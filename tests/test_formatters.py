@@ -1,6 +1,6 @@
 """Tests for formatters.py."""
 
-from formatters import (
+from strava_mcp_vault.formatters import (
     _activity_category,
     _format_date,
     _format_distance,

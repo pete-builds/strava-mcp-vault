@@ -6,12 +6,12 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from mcp.server import MCPServer
 
-from cache.db import CacheDB
-from cache.geocode import forward_geocode, reverse_geocode_many
-from cache.manager import CacheManager
-from clients.strava import StravaClient
-from exceptions import VaultError
-from formatters import (
+from strava_mcp_vault.cache.db import CacheDB
+from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
+from strava_mcp_vault.cache.manager import CacheManager
+from strava_mcp_vault.clients.strava import StravaClient
+from strava_mcp_vault.exceptions import VaultError
+from strava_mcp_vault.formatters import (
     format_activities_near,
     format_activity_detail,
     format_activity_streams,
@@ -373,12 +373,17 @@ def build_app():
     Do not "simplify" this to streamable_http_app().
     See tests/test_transport_host.py, which fails if this argument is dropped.
     """
-    from auth import maybe_add_auth
+    from strava_mcp_vault.auth import maybe_add_auth
 
     return maybe_add_auth(mcp.streamable_http_app(host=HTTP_HOST))
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Serve the MCP app over streamable HTTP. Console-script entry point."""
     import uvicorn
 
     uvicorn.run(build_app(), host=HTTP_HOST, port=port)
+
+
+if __name__ == "__main__":
+    main()

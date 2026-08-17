@@ -1,6 +1,6 @@
 """Tests for cache/db.py."""
 
-from cache.db import _haversine_miles
+from strava_mcp_vault.cache.db import _haversine_miles
 
 # ── Haversine ──────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ async def test_cache_stats(tmp_db):
 async def test_set_and_get_tokens(tmp_db, monkeypatch):
     monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
     # Reset encryption module so it uses plaintext
-    import cache.encryption as enc
+    import strava_mcp_vault.cache.encryption as enc
 
     enc._fernet = None
     enc._initialized = False
