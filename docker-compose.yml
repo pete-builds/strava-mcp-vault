@@ -6,14 +6,22 @@ x-logging: &default-logging
 
 services:
   strava-mcp-vault:
-    build: .
-    image: strava-mcp-vault:0.2.0       # explicit version tag, NOT :latest
+    # Pulled from GHCR, published by .github/workflows/release.yml on a
+    # v*.*.* tag. Explicit version, NOT :latest, so a restart can never
+    # silently change the running code. The release workflow refuses to
+    # publish unless this tag matches the git tag being released.
+    #
+    # To build locally instead of pulling:
+    #   docker build -t ghcr.io/pete-builds/strava-mcp-vault:0.3.0 .
+    image: ghcr.io/pete-builds/strava-mcp-vault:0.3.0
     container_name: strava-mcp-vault
     ports:
       - "${MCP_BIND_HOST:-0.0.0.0}:${STRAVA_MCP_PORT:-18201}:18201"
     env_file: .env
     restart: unless-stopped
     read_only: true
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp
     volumes:

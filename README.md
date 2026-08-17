@@ -233,6 +233,51 @@ Requires Python 3.11+.
 Run the tests with `pytest`, and the linters with `ruff check .` and
 `ruff format --check .`. Both run in CI.
 
+## Releasing and deploying
+
+The image is published to GHCR by CI, not built on the host. `docker-compose.yml`
+pins an explicit version so a restart can never silently change the running code.
+
+To cut a release:
+
+1. Bump the image tag in `docker-compose.yml` to the new version and commit it.
+   The release workflow refuses to publish if this disagrees with the git tag,
+   which stops a release from producing an image the compose does not reference.
+2. Tag and push:
+
+   ```bash
+   git tag -a v0.3.0 -m "v0.3.0"
+   git push origin v0.3.0
+   ```
+
+3. `.github/workflows/release.yml` builds `linux/amd64` and `linux/arm64`,
+   pushes to `ghcr.io/pete-builds/strava-mcp-vault`, attaches an SBOM and a
+   signed provenance attestation, and cuts a GitHub release.
+
+4. On the host:
+
+   ```bash
+   docker compose pull && docker compose up -d
+   ```
+
+### Verify the deploy, do not trust a green pipeline
+
+This server binds a non-loopback host on purpose. The MCP SDK enables
+DNS-rebinding protection automatically when the bind host is loopback, which
+makes the server answer `HTTP 421 Invalid Host header` to every LAN client
+while every unit test still passes. CI cannot see that failure. After
+deploying, confirm against the real listener rather than localhost:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'Host: 192.168.86.20:18201' \
+  -H 'Authorization: Bearer <token>' \
+  http://192.168.86.20:18201/mcp
+```
+
+Expect `200`. A `421` means the bind host regressed. See
+`tests/test_transport_host.py`, which pins this.
+
 ## Troubleshooting
 
 **401 Authorization Error**: Wrong OAuth scopes. You need `activity:read_all`, not just `read`. See the [OAuth Walkthrough](#oauth-walkthrough).

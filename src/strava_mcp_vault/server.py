@@ -4,7 +4,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from strava_mcp_vault.cache.db import CacheDB
 from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
@@ -87,7 +87,12 @@ async def lifespan(server):
 
 
 port = int(os.getenv("STRAVA_MCP_PORT", "18201"))
-mcp = FastMCP("strava-vault", host="0.0.0.0", port=port, lifespan=lifespan)
+
+# Bind address for the HTTP transport. This value is load-bearing twice over:
+# once for uvicorn, and once for MCP transport security (see build_app).
+HTTP_HOST = "0.0.0.0"
+
+mcp = MCPServer("strava-vault", lifespan=lifespan)
 
 
 @mcp.tool()
@@ -350,19 +355,34 @@ async def sync_activities(days_back: int = 0) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
+def build_app():
+    """Build the Streamable HTTP ASGI app, with bearer auth if configured.
+
+    Streamable HTTP transport (MCP spec 2025-06-18). Replaces the deprecated
+    HTTP+SSE transport from 2024-11-05. Single /mcp endpoint that serves POST
+    (client -> server) and GET (server -> client SSE stream) on the same path.
+
+    Passing host=HTTP_HOST is REQUIRED, not redundant with the uvicorn bind
+    below. Since mcp 2.0, streamable_http_app() auto-enables DNS-rebinding
+    protection whenever it is given a loopback host (its default is
+    "127.0.0.1"), which makes the server answer HTTP 421 "Invalid Host header"
+    to every request that does not arrive as localhost. This server is reached
+    over the LAN and Tailscale, so that would break every real client while
+    still looking healthy from the box itself.
+
+    Do not "simplify" this to streamable_http_app().
+    See tests/test_transport_host.py, which fails if this argument is dropped.
+    """
+    from strava_mcp_vault.auth import maybe_add_auth
+
+    return maybe_add_auth(mcp.streamable_http_app(host=HTTP_HOST))
+
+
 def main() -> None:
     """Serve the MCP app over streamable HTTP. Console-script entry point."""
     import uvicorn
 
-    from strava_mcp_vault.auth import maybe_add_auth
-
-    # Streamable HTTP transport (MCP spec 2025-06-18). Replaces the
-    # deprecated HTTP+SSE transport from 2024-11-05. Single /mcp endpoint
-    # that serves POST (client -> server) and GET (server -> client SSE
-    # stream) on the same path.
-    app = mcp.streamable_http_app()
-    app = maybe_add_auth(app)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(build_app(), host=HTTP_HOST, port=port)
 
 
 if __name__ == "__main__":
