@@ -10,6 +10,48 @@ from strava_mcp_vault.exceptions import RateLimitError, StravaAPIError
 logger = logging.getLogger(__name__)
 
 
+def _describe_error_body(response: httpx.Response) -> str:
+    """Summarise an error body rather than forwarding 200 raw characters.
+
+    This detail string ends up in a tool result, which goes straight into an
+    agent's context. Strava's documented error shape is JSON --
+    ``{"message": "...", "errors": [{"resource", "field", "code"}]}`` -- and
+    that is genuinely useful, so it is kept. Everything else is not: a
+    maintenance page, a captive portal, or a CDN interstitial is an arbitrary
+    blob that says nothing an agent can act on, and truncating it to 200
+    characters made it less readable rather than less risky.
+
+    On the credential question, since that is the reason to look at a path like
+    this and it does NOT apply here: the bearer token is sent as a header and
+    the refresh token only in a POST body, so nothing Strava echoes back
+    carries a secret. This is context hygiene, not a leak, and saying so keeps
+    the finding honest.
+    """
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - an HTML body is exactly the case
+        payload = None
+
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message:
+            fields = payload.get("errors")
+            if isinstance(fields, list) and fields:
+                first = fields[0]
+                if isinstance(first, dict):
+                    field = first.get("field")
+                    code = first.get("code")
+                    if field and code:
+                        return f"{message} ({field}: {code})"[:200]
+            return message[:200]
+
+    body = response.text or ""
+    if not body:
+        return ""
+    content_type = response.headers.get("content-type", "unknown")
+    return f"non-JSON upstream response ({content_type}, {len(body)} bytes)"
+
+
 class StravaClient(BaseClient):
     """Strava API v3 client with OAuth token management and rate limit tracking."""
 
@@ -120,7 +162,7 @@ class StravaClient(BaseClient):
                 raise StravaAPIError(
                     status_code=e.response.status_code,
                     path=path,
-                    detail=e.response.text[:200],
+                    detail=_describe_error_body(e.response),
                 ) from e
             except (httpx.RemoteProtocolError, httpx.ConnectError):
                 if attempt == 0:
