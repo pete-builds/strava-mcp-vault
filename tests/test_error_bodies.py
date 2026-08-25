@@ -30,10 +30,12 @@ def _resp(status: int, body: str, content_type: str) -> httpx.Response:
 
 
 def test_the_documented_json_shape_is_kept():
-    body = json.dumps({
-        "message": "Authorization Error",
-        "errors": [{"resource": "Athlete", "field": "access_token", "code": "invalid"}],
-    })
+    body = json.dumps(
+        {
+            "message": "Authorization Error",
+            "errors": [{"resource": "Athlete", "field": "access_token", "code": "invalid"}],
+        }
+    )
     detail = _describe_error_body(_resp(401, body, "application/json"))
 
     assert "Authorization Error" in detail
@@ -43,9 +45,7 @@ def test_the_documented_json_shape_is_kept():
 
 def test_a_message_without_a_field_list_still_works():
     body = json.dumps({"message": "Rate Limit Exceeded"})
-    assert _describe_error_body(_resp(429, body, "application/json")) == (
-        "Rate Limit Exceeded"
-    )
+    assert _describe_error_body(_resp(429, body, "application/json")) == ("Rate Limit Exceeded")
 
 
 def test_an_html_maintenance_page_reports_its_shape_not_its_markup():
@@ -83,8 +83,7 @@ async def test_the_request_path_actually_uses_the_helper():
     html = "<html><body>Strava is down for maintenance</body></html>"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503, content=html.encode(),
-                              headers={"content-type": "text/html"})
+        return httpx.Response(503, content=html.encode(), headers={"content-type": "text/html"})
 
     client = StravaClient(client_id="id", client_secret="secret", cache_db=None)
     client._access_token = "token"
