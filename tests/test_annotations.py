@@ -19,12 +19,19 @@ import pytest
 from strava_mcp_vault.server import mcp
 
 LOCAL = {
-    "query_vault", "get_cache_stats", "get_activities_near",
-    "set_activity_location", "delete_vault_activity",
+    "query_vault",
+    "get_cache_stats",
+    "get_activities_near",
+    "set_activity_location",
+    "delete_vault_activity",
 }
 REMOTE = {
-    "get_recent_activities", "get_activity", "get_activity_streams",
-    "get_athlete_profile", "get_athlete_stats", "sync_activities",
+    "get_recent_activities",
+    "get_activity",
+    "get_activity_streams",
+    "get_athlete_profile",
+    "get_athlete_stats",
+    "sync_activities",
 }
 WRITES = {"set_activity_location", "delete_vault_activity", "sync_activities"}
 
@@ -71,10 +78,7 @@ def test_writes_are_never_marked_read_only(tools):
 
 def test_reads_are_not_marked_destructive(tools):
     """A safe tool that scares the client is also wrong."""
-    wrong = sorted(
-        n for n, t in tools.items()
-        if n not in WRITES and hint(t, "destructiveHint")
-    )
+    wrong = sorted(n for n, t in tools.items() if n not in WRITES and hint(t, "destructiveHint"))
     assert wrong == []
 
 
