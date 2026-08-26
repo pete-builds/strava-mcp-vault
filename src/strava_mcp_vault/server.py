@@ -94,8 +94,68 @@ HTTP_HOST = "0.0.0.0"
 
 mcp = MCPServer("strava-vault", lifespan=lifespan)
 
+# --- Tool annotations ---
+# Nothing in an MCP manifest distinguishes delete_vault_activity from
+# get_activity unless the tool says so, so a client has no basis on which to
+# prompt before a destructive call.
+#
+# openWorldHint is set per tool rather than uniformly, because it genuinely
+# varies here: the vault is a LOCAL store, so most reads never leave the host,
+# while the Strava-backed tools do. Marking everything open-world would be the
+# easy uniform answer and would misdescribe most of the surface.
 
-@mcp.tool()
+#: Reads the local vault. Never leaves this host.
+READ_LOCAL = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+#: Reads via the Strava API, so an answer can change between identical calls.
+READ_REMOTE = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+#: Sets a value in the local vault. Applying the same location twice lands in
+#: the same place, so a retry is safe.
+WRITE_IDEMPOTENT = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+#: Pulls from Strava into the vault. Idempotent by design -- it upserts, so
+#: running it twice converges rather than duplicating -- but it reaches out.
+SYNC = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+#: Removes activities from the vault. The call worth confirming.
+#:
+#: Worth being precise about the blast radius rather than overstating it: this
+#: deletes from the LOCAL vault only and never touches Strava, and
+#: sync_activities can re-pull anything still within the sync window. What it
+#: cannot restore is an activity older than that window, or a manual location
+#: set through set_activity_location. So it is recoverable in the common case
+#: and not in the interesting one, which is exactly when a confirmation is
+#: worth having.
+DESTRUCTIVE = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+
+@mcp.tool(annotations=READ_REMOTE)
 async def get_recent_activities(
     count: int = 10,
     sport_type: str | None = None,
@@ -129,7 +189,7 @@ async def get_recent_activities(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_LOCAL)
 async def query_vault(
     sport_type: str | None = None,
     after: str | None = None,
@@ -160,7 +220,7 @@ async def query_vault(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_REMOTE)
 async def get_activity(activity_id: int) -> str:
     """Get full details for a specific Strava activity.
 
@@ -177,7 +237,7 @@ async def get_activity(activity_id: int) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_REMOTE)
 async def get_activity_streams(
     activity_id: int, stream_types: str = "heartrate,distance,altitude"
 ) -> str:
@@ -197,7 +257,7 @@ async def get_activity_streams(
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_REMOTE)
 async def get_athlete_profile() -> str:
     """Get the authenticated Strava athlete's profile."""
     try:
@@ -210,7 +270,7 @@ async def get_athlete_profile() -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_REMOTE)
 async def get_athlete_stats() -> str:
     """Get year-to-date and all-time activity statistics."""
     try:
@@ -231,14 +291,14 @@ def _validate_radius_miles(radius_miles: float) -> str | None:
     return None
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_LOCAL)
 async def get_cache_stats() -> str:
     """Show cache hit/miss rates, stored items, and API rate limit status."""
     stats = await manager.get_cache_stats()
     return format_cache_stats(stats)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_LOCAL)
 async def get_activities_near(
     location: str,
     radius_miles: float = 20.0,
@@ -294,7 +354,7 @@ async def get_activities_near(
     return format_activities_near(results, location, radius_miles)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 async def set_activity_location(activity_id: int, location: str | None = None) -> str:
     """Manually set (or clear) the display location for a vault activity.
 
@@ -313,7 +373,7 @@ async def set_activity_location(activity_id: int, location: str | None = None) -
     return f"✅ Location override cleared for activity {activity_id}."
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 async def delete_vault_activity(activity_ids: list[int]) -> str:
     """Delete one or more activities from the local vault by Strava activity ID.
 
@@ -330,7 +390,7 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
     return format_delete_activities(deleted, activity_ids)
 
 
-@mcp.tool()
+@mcp.tool(annotations=SYNC)
 async def sync_activities(days_back: int = 0) -> str:
     """Sync Strava activities into the local vault.
 
