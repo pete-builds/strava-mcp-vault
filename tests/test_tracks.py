@@ -20,6 +20,7 @@ from strava_mcp_vault.tracks import (
     clip_to_polyline,
     decode_polyline,
     haversine_m,
+    normalize_streams,
     simplify,
 )
 
@@ -183,3 +184,54 @@ def test_precision_is_applied():
     result = build_track(streams_from(full), encode_polyline(full), tolerance_m=0, precision=3)
     lat = result["points"][0][0]
     assert lat == round(lat, 3)
+
+
+# --- The shape the live API actually returns ---
+#
+# These exist because every test above passed against a dict fixture while the
+# first real call failed with "'list' object has no attribute 'get'". Strava's
+# streams endpoint answers with a LIST of stream objects for key_type=time. A
+# fixture invented from the docs cannot catch that; only the real shape can.
+
+
+def streams_as_list(points, base_ele=300.0):
+    """The live shape: a list of {type, data} objects."""
+    return [
+        {"type": "latlng", "data": [[lat, lon] for lat, lon in points], "series_type": "distance"},
+        {"type": "altitude", "data": [base_ele + i for i in range(len(points))]},
+        {"type": "time", "data": list(range(len(points)))},
+    ]
+
+
+def test_build_track_accepts_the_list_shape_the_api_returns():
+    full = line(42.3400, -76.3505, 40)
+    published = full[6:-6]
+    result = build_track(streams_as_list(full), encode_polyline(published), tolerance_m=0)
+    assert result["trimmed_head"] == 6
+    assert result["trimmed_tail"] == 6
+    assert result["has_elevation"] is True
+
+
+def test_both_shapes_produce_the_same_track():
+    full = line(42.3400, -76.3505, 30)
+    poly = encode_polyline(full[4:-4])
+    as_dict = build_track(streams_from(full), poly, tolerance_m=0)
+    as_list = build_track(streams_as_list(full), poly, tolerance_m=0)
+    assert as_dict["points"] == as_list["points"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        [{"type": "latlng", "data": [[1.0, 2.0]]}],
+        {"latlng": {"data": [[1.0, 2.0]]}},
+        {"latlng": [[1.0, 2.0]]},
+    ],
+)
+def test_normalize_handles_every_documented_shape(raw):
+    assert normalize_streams(raw)["latlng"] == [[1.0, 2.0]]
+
+
+def test_normalize_is_empty_on_nonsense_rather_than_raising():
+    assert normalize_streams(None) == {}
+    assert normalize_streams("nope") == {}

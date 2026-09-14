@@ -13,6 +13,8 @@ Activity-type-specific formatting:
 
 from datetime import datetime
 
+from strava_mcp_vault.tracks import normalize_streams
+
 METERS_PER_MILE = 1609.344
 METERS_PER_YARD = 0.9144
 
@@ -618,23 +620,10 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
     """
     lines = [f"## Activity Streams (ID: {activity_id})\n"]
 
-    # Normalize to dict form
-    if isinstance(streams, list):
-        stream_dict = {}
-        for s in streams:
-            if isinstance(s, dict) and "type" in s:
-                stream_dict[s["type"]] = s.get("data", [])
-        streams = stream_dict
-    elif isinstance(streams, dict):
-        normalized = {}
-        for k, v in streams.items():
-            if isinstance(v, dict) and "data" in v:
-                normalized[k] = v["data"]
-            elif isinstance(v, list):
-                normalized[k] = v
-            else:
-                normalized[k] = v
-        streams = normalized
+    # One normaliser, shared with tracks.build_track. This used to be a second
+    # inline copy; the copy in build_track was written against the dict shape
+    # only and died on the list shape the live API actually returns.
+    streams = normalize_streams(streams)
 
     if not streams:
         lines.append("No stream data available.")

@@ -126,6 +126,39 @@ def _last_index_within(
     return None
 
 
+def normalize_streams(streams) -> dict[str, list]:
+    """Flatten a Strava streams response to {type: [values]}.
+
+    The endpoint answers in TWO shapes and which one you get is not obvious from
+    the docs: a list of {"type": ..., "data": [...]} objects, which is what the
+    live API actually returned for `key_type=time`, or a dict keyed by type
+    whose values are either the {"data": [...]} envelope or the bare list.
+
+    This is the single normaliser. A second copy of it lived inline in
+    `format_activity_streams`, and `build_track` was written against the dict
+    shape alone from a fixture: every unit test passed and the first live call
+    died with "'list' object has no attribute 'get'". Fixtures cannot tell you
+    the shape of an upstream you have not probed.
+    """
+    if isinstance(streams, list):
+        out: dict[str, list] = {}
+        for entry in streams:
+            if isinstance(entry, dict) and "type" in entry:
+                out[entry["type"]] = entry.get("data") or []
+        return out
+
+    if isinstance(streams, dict):
+        out = {}
+        for key, value in streams.items():
+            if isinstance(value, dict) and "data" in value:
+                out[key] = value["data"] or []
+            elif isinstance(value, list):
+                out[key] = value
+        return out
+
+    return {}
+
+
 class ClipError(ValueError):
     """Raised when a stream cannot be clipped to its polyline with confidence."""
 
@@ -238,9 +271,10 @@ def build_track(
     ClipError when the recording cannot be clipped to its polyline, because a
     track we cannot bound is a track that may expose a trimmed start.
     """
-    latlng = (streams.get("latlng") or {}).get("data") or []
-    altitude = (streams.get("altitude") or {}).get("data") or []
-    times = (streams.get("time") or {}).get("data") or []
+    normalized = normalize_streams(streams)
+    latlng = normalized.get("latlng") or []
+    altitude = normalized.get("altitude") or []
+    times = normalized.get("time") or []
 
     stream_points = [(float(p[0]), float(p[1])) for p in latlng if isinstance(p, (list, tuple))]
     poly = decode_polyline(summary_polyline or "")
