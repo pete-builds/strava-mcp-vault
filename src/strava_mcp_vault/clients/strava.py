@@ -237,6 +237,16 @@ class StravaClient(BaseClient):
         }
         return await self._get(f"/activities/{activity_id}/streams", params=params)
 
+    async def get_activity_photos(self, activity_id: int, size: int = 2048) -> list:
+        """GET /activities/{id}/photos - returns the activity's photos.
+
+        `size` selects which rendition Strava puts in each record's `urls` map;
+        it returns that one only, so ask for the size you intend to use.
+        """
+        params = {"size": size, "photo_sources": "true"}
+        result = await self._get(f"/activities/{activity_id}/photos", params=params)
+        return result if isinstance(result, list) else []
+
     async def get_gear(self, gear_id: str) -> dict:
         """GET /gear/{id} - returns gear details (bike or shoe)."""
         return await self._get(f"/gear/{gear_id}")
