@@ -68,6 +68,21 @@ class CacheDB:
                 total_synced INTEGER DEFAULT 0,
                 mode TEXT
             );
+
+            -- Curated, human-named riding locations used to build the public
+            -- ride-spot export. Deliberately its OWN table rather than a column
+            -- on activities: sync_activities upserts activities with INSERT OR
+            -- REPLACE, which is why location_override gets wiped on every
+            -- re-sync. Curation that lives here cannot be destroyed by a sync,
+            -- because sync never touches this table.
+            CREATE TABLE IF NOT EXISTS ride_spots (
+                name TEXT PRIMARY KEY,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                radius_miles REAL NOT NULL DEFAULT 1.0,
+                blurb TEXT,
+                created_at REAL NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -387,6 +402,100 @@ class CacheDB:
         )
         await self._db.commit()
         return cursor.rowcount > 0
+
+    # --- Ride spots (curated allowlist for the public export) ---
+
+    async def upsert_ride_spot(
+        self,
+        name: str,
+        lat: float,
+        lon: float,
+        radius_miles: float = 1.0,
+        blurb: str | None = None,
+    ) -> None:
+        """Create or update one curated ride spot."""
+        await self._db.execute(
+            """
+            INSERT INTO ride_spots (name, lat, lon, radius_miles, blurb, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                lat = excluded.lat,
+                lon = excluded.lon,
+                radius_miles = excluded.radius_miles,
+                blurb = excluded.blurb
+            """,
+            (name, lat, lon, radius_miles, blurb, time.time()),
+        )
+        await self._db.commit()
+
+    async def delete_ride_spot(self, name: str) -> bool:
+        """Remove a curated ride spot. Returns True if it existed."""
+        cursor = await self._db.execute("DELETE FROM ride_spots WHERE name = ?", (name,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def get_ride_spots(self) -> list[dict]:
+        """Return every curated ride spot, alphabetically."""
+        cursor = await self._db.execute(
+            "SELECT name, lat, lon, radius_miles, blurb FROM ride_spots ORDER BY name"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "name": name,
+                "lat": lat,
+                "lon": lon,
+                "radius_miles": radius_miles,
+                "blurb": blurb,
+            }
+            for name, lat, lon, radius_miles, blurb in rows
+        ]
+
+    async def get_public_activities_with_geometry(
+        self,
+        sport_types: list[str],
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict]:
+        """Return publishable activities that carry route geometry.
+
+        The visibility test is an explicit allowlist (`= 'everyone'`), so an
+        activity with a missing or unrecognized visibility value is withheld
+        rather than published. `spots.build_export` re-applies the same test on
+        the dicts, so the guarantee does not rest on this WHERE clause alone.
+
+        Reads only the `activities` table. It deliberately does not touch the
+        cache table, whose `activity_detail` entries are overwritten with
+        stripped-down summaries by every sync.
+        """
+        if not sport_types:
+            return []
+
+        placeholders = ",".join("?" for _ in sport_types)
+        conditions = [
+            f"sport_type IN ({placeholders})",
+            "start_lat IS NOT NULL",
+            "json_extract(data, '$.map.summary_polyline') IS NOT NULL",
+            "json_extract(data, '$.map.summary_polyline') != ''",
+            "json_extract(data, '$.visibility') = ?",
+            "COALESCE(json_extract(data, '$.private'), 0) = 0",
+        ]
+        params: list = [*sport_types, "everyone"]
+
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        cursor = await self._db.execute(
+            f"SELECT data FROM activities WHERE {' AND '.join(conditions)} "
+            "ORDER BY start_date DESC",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     async def get_vault_date_range(self) -> dict | None:
         """Return the earliest and latest activity dates in the vault."""

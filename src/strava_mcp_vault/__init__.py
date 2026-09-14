@@ -5,6 +5,6 @@ so repeated queries do not spend rate-limit budget, automatic OAuth token
 refresh, and encrypted token storage at rest.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]
