@@ -50,6 +50,46 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 | `get_cache_stats` | Cache hit/miss rates and API rate limit status | none |
 | `sync_activities` | Bulk-sync recent activities into cache | varies |
 | `query_vault` | Filter and aggregate cached activities by date, sport type | none |
+| `get_activities_near` | Vault activities that started near a place name | none |
+| `set_activity_location` | Hand-label an indoor or GPS-less activity | none |
+| `delete_vault_activity` | Remove activities from the local vault | none |
+| `set_ride_spot` | Name a riding location so it can be published | none |
+| `list_ride_spots` | Show the curated spots the export may publish | none |
+| `export_ride_spots` | Curated ride spots as JSON for a public page | none |
+
+## Publishing ride spots
+
+`export_ride_spots` exists to feed a public web page, so it is built to publish
+nothing by default rather than to publish what it has.
+
+A spot appears only after you name it with `set_ride_spot`. There is no
+fallback that names a cluster from a reverse geocode, and that omission is the
+point: clustering ride start points and labelling the clusters automatically
+sounds right and is not. On a real vault the largest cluster of bike activities
+was 59 rides starting in a neighborhood, outranking the trail system that came
+third. Auto-naming publishes a home address first and largest.
+
+Three guarantees the export makes, each pinned by a test that fails when the
+guarantee is removed:
+
+- **Only `visibility == "everyone"` is published.** A missing, empty, or
+  unrecognized visibility is withheld. Strava has changed this field before, so
+  an unknown value fails closed instead of open.
+- **Uncurated clusters are counted, never named.** The payload reports a bare
+  `unassigned_rides` number, because those coordinates are exactly what must
+  stay off a public page.
+- **No recorded start coordinate is ever emitted.** Only route polylines go
+  out, and a spot's map pin is the coordinate you curated. Strava's own
+  privacy-zone trimming is not a substitute: it is applied inconsistently, and
+  `start_latlng` is the raw recorded start regardless.
+
+Curated spots live in their own `ride_spots` table, so `sync_activities` cannot
+wipe them the way it wipes `set_activity_location` overrides.
+
+```
+set_ride_spot(name="Shindagin Hollow", lat=42.3451, lon=-76.3505, radius_miles=1.0)
+export_ride_spots(sport_types="Ride,MountainBikeRide,GravelRide")
+```
 
 ## Example Output
 
