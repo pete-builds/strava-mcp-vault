@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -24,7 +25,16 @@ from strava_mcp_vault.formatters import (
     format_sync_result,
     format_vault_query,
 )
-from strava_mcp_vault.spots import build_export, format_export, format_spot_list
+from strava_mcp_vault.photos import pick_for_spot, strip_photo
+from strava_mcp_vault.spots import (
+    DEFAULT_SPORT_TYPES,
+    assign_to_spots,
+    build_export,
+    format_export,
+    format_spot_list,
+    is_public,
+)
+from strava_mcp_vault.tracks import DEFAULT_TOLERANCE_M, ClipError, build_track
 
 load_dotenv()
 logging.basicConfig(
@@ -493,6 +503,191 @@ async def export_ride_spots(
     )
     payload = build_export(activities, spots, types, after=after, before=before)
     return format_export(payload)
+
+
+@mcp.tool(annotations=READ_REMOTE)
+async def get_route_track(
+    activity_id: int,
+    tolerance_m: float = DEFAULT_TOLERANCE_M,
+    precision: int = 5,
+    include_time: bool = False,
+) -> str:
+    """Full-resolution route geometry for one activity, safe to publish as GPX.
+
+    Returns a JSON string: `points` as [[lat, lon, elevation_m], ...] (a fourth
+    element carries seconds-from-start when include_time is set), plus
+    `raw_points`, `published_points`, `trimmed_head`, `trimmed_tail` and
+    `tolerance_m` so a caller can see exactly how much was cut and why.
+
+    The track is CLIPPED to the activity's summary_polyline before anything is
+    returned. Strava privacy-zone trims the polyline it publishes but does not
+    trim the underlying latlng stream, so an unclipped stream would republish the
+    exact start point Strava was hiding. Where the recording cannot be matched to
+    its polyline this errors rather than guessing, because a track nobody can
+    bound is one that may expose a trimmed start.
+
+    Only activities marked visible to everyone are served. Reaches Strava the
+    first time and is then cached for 7 days.
+
+    Args:
+        activity_id: The Strava activity ID.
+        tolerance_m: Douglas-Peucker simplification in metres (default 5, which is inside GPS noise).
+        precision: Decimal places for coordinates (default 5, about 1.1 m).
+        include_time: Include seconds-from-start on each point.
+    """
+    try:
+        row = await manager.db.get_activity_row(activity_id)
+        if row is None:
+            return f"Activity {activity_id} is not in the vault."
+        if not is_public(row):
+            return f"Activity {activity_id} is not visible to everyone, so it is not publishable."
+
+        polyline = (row.get("map") or {}).get("summary_polyline") or ""
+        if not polyline:
+            return f"Activity {activity_id} has no route geometry."
+
+        streams = await manager.get_activity_streams(activity_id, "latlng,altitude,time")
+        track = build_track(
+            streams,
+            polyline,
+            tolerance_m=tolerance_m,
+            precision=precision,
+            include_time=include_time,
+        )
+        track["activity_id"] = activity_id
+        track["name"] = row.get("name") or ""
+        track["sport_type"] = row.get("sport_type") or row.get("type") or ""
+        track["start_date_local"] = row.get("start_date_local") or ""
+        return json.dumps(track)
+    except ClipError as e:
+        return f"Refusing to emit a track for {activity_id}: {e}"
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in get_route_track")
+        return f"Unexpected error: {type(e).__name__}: {e}"
+
+
+@mcp.tool(annotations=READ_REMOTE)
+async def export_spot_photos(size: int = 2048, per_spot: int = 1) -> str:
+    """Pick a photo for each curated ride spot, for a public page to self-host.
+
+    Returns a JSON string: one entry per spot that has any, each carrying the
+    spot name and slug plus `photos` with `url`, `caption`, `activity_id`,
+    `activity_name`, `created_at_local` and pixel `width`/`height`.
+
+    The URLs are Strava's own CDN renditions and rotate, so download them and
+    serve your own copies rather than hotlinking. A photo's EXIF `location` is
+    never returned: Strava sends a full-precision coordinate with every photo,
+    which is the shutter position rather than the trimmed route, and on a photo
+    taken before setting off that is the athlete's front door.
+
+    Only activities visible to everyone are considered. Reaches Strava once per
+    activity inspected and caches for 7 days, so the first call on a cold cache
+    is slow and later ones are not.
+
+    Args:
+        size: Pixel rendition to request from Strava (default 2048).
+        per_spot: How many photos to return for each spot (default 1).
+    """
+    try:
+        spots = await manager.db.get_ride_spots()
+        if not spots:
+            return "No ride spots curated yet. Name one with set_ride_spot first."
+
+        types = list(DEFAULT_SPORT_TYPES)
+        activities = await manager.db.get_public_activities_with_geometry(types)
+        buckets, _ = assign_to_spots(activities, spots)
+
+        out = []
+        for spot in spots:
+            members = [
+                a for a in buckets.get(spot["name"], []) if (a.get("total_photo_count") or 0) > 0
+            ]
+            members.sort(key=lambda a: a.get("start_date_local") or "", reverse=True)
+
+            collected: list[dict] = []
+            for activity in members:
+                if len(collected) >= per_spot:
+                    break
+                raw = await manager.get_activity_photos(activity["id"], size=size)
+                for photo in raw:
+                    shaped = strip_photo(photo, size)
+                    if shaped:
+                        collected.append(shaped)
+            if collected:
+                out.append(
+                    {
+                        "name": spot["name"],
+                        "slug": spot["name"].lower().replace(" ", "-"),
+                        "photos": pick_for_spot(collected, per_spot),
+                    }
+                )
+
+        return json.dumps(
+            {"size": size, "per_spot": per_spot, "spots": out, "spots_with_photos": len(out)},
+            indent=2,
+        )
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in export_spot_photos")
+        return f"Unexpected error: {type(e).__name__}: {e}"
+
+
+@mcp.tool(annotations=SYNC)
+async def sync_route_tracks(limit: int = 80) -> str:
+    """Warm the stream cache for publishable rides, one rate-limited batch.
+
+    Returns a plain report of how many were fetched, how many were already
+    cached, how many were refused by the clipping guard, and the Strava rate
+    limit headroom left afterwards.
+
+    Strava allows 100 requests per 15 minutes, so the default stops at 80 and
+    leaves room for everything else this server does. Run it repeatedly until it
+    reports nothing left. Streams cache for 7 days, so a completed backfill stays
+    warm for a week.
+
+    Args:
+        limit: Maximum activities to fetch this run (default 80).
+    """
+    try:
+        spots = await manager.db.get_ride_spots()
+        activities = await manager.db.get_public_activities_with_geometry(list(DEFAULT_SPORT_TYPES))
+        if spots:
+            buckets, _ = assign_to_spots(activities, spots)
+            activities = [a for members in buckets.values() for a in members]
+
+        fetched = cached = refused = 0
+        remaining = 0
+        for activity in activities:
+            key = manager.stream_cache_key(activity["id"], "latlng,altitude,time")
+            if await manager.db.get_cached(key) is not None:
+                cached += 1
+                continue
+            if fetched >= limit:
+                remaining += 1
+                continue
+            try:
+                streams = await manager.get_activity_streams(activity["id"], "latlng,altitude,time")
+                fetched += 1
+                build_track(streams, (activity.get("map") or {}).get("summary_polyline") or "")
+            except ClipError:
+                refused += 1
+            except Exception:
+                logger.exception("stream fetch failed for %s", activity["id"])
+
+        stats = await manager.get_cache_stats()
+        rate = stats.get("rate_limit", {})
+        return (
+            f"Fetched {fetched}, already cached {cached}, refused by the clipping guard {refused}, "
+            f"still to do {remaining}.\nRate limit: {rate}"
+        )
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in sync_route_tracks")
+        return f"Unexpected error: {type(e).__name__}: {e}"
 
 
 @mcp.tool(annotations=SYNC)

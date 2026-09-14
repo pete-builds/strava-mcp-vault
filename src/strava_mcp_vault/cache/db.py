@@ -497,6 +497,18 @@ class CacheDB:
         rows = await cursor.fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    async def get_activity_row(self, activity_id: int) -> dict | None:
+        """Return one activity's stored Strava JSON, or None if not in the vault.
+
+        Reads the `activities` table, never the cache: sync overwrites the
+        `activity_detail` cache entries with stripped-down list summaries
+        (audit finding 2), so the cache path loses `visibility` and `map` for a
+        day after every sync, and both are load-bearing here.
+        """
+        cursor = await self._db.execute("SELECT data FROM activities WHERE id = ?", (activity_id,))
+        row = await cursor.fetchone()
+        return json.loads(row[0]) if row else None
+
     async def get_vault_date_range(self) -> dict | None:
         """Return the earliest and latest activity dates in the vault."""
         cursor = await self._db.execute(

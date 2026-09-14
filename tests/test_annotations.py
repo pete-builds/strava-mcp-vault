@@ -29,6 +29,9 @@ LOCAL = {
     "export_ride_spots",
 }
 REMOTE = {
+    "sync_route_tracks",
+    "get_route_track",
+    "export_spot_photos",
     "get_recent_activities",
     "get_activity",
     "get_activity_streams",
@@ -36,7 +39,13 @@ REMOTE = {
     "get_athlete_stats",
     "sync_activities",
 }
-WRITES = {"set_activity_location", "delete_vault_activity", "sync_activities", "set_ride_spot"}
+WRITES = {
+    "set_activity_location",
+    "delete_vault_activity",
+    "sync_activities",
+    "sync_route_tracks",
+    "set_ride_spot",
+}
 
 
 def hint(tool, name: str):
@@ -65,7 +74,7 @@ def test_every_tool_is_annotated(tools):
     assert sorted(n for n, t in tools.items() if t.annotations is None) == []
 
 
-def test_the_expected_fourteen_are_present(tools):
+def test_the_expected_seventeen_are_present(tools):
     """Guards the guard: an empty manifest would pass everything below."""
     assert set(tools) == LOCAL | REMOTE
 

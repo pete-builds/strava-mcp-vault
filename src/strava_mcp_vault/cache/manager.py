@@ -24,6 +24,7 @@ TTL = {
     "activity_streams": 604800,  # 7 days
     "athlete_profile": 86400,  # 24 hours
     "athlete_stats": 86400,  # 1 day
+    "activity_photos": 604800,  # 7 days; the URLs are signed and rotate
 }
 
 # Fields to extract when shaping activity list responses
@@ -242,6 +243,36 @@ class CacheManager:
         await self.db.set_cached(key, category, result, TTL[category])
         return result
 
+    async def get_activity_photos(self, activity_id: int, size: int = 2048) -> list:
+        """Return an activity's photos, cached for 7 days.
+
+        Cached under its own key rather than the activity_detail key, which sync
+        overwrites with stripped-down list summaries (audit finding 2). Building
+        on that key would mean photos vanishing for 24 hours after every sync.
+        """
+        key = f"activity_photos:{activity_id}:{size}"
+        cached = await self.db.get_cached(key)
+        if cached is not None:
+            return cached
+
+        result = await self.client.get_activity_photos(activity_id, size=size)
+        await self.db.set_cached(key, "activity_photos", result, TTL["activity_photos"])
+        return result
+
+    @staticmethod
+    def stream_cache_key(activity_id: int, stream_types: str) -> str:
+        """The cache key for one activity's streams.
+
+        The type list is SORTED into the key, so "latlng,altitude,time" and
+        "altitude,latlng,time" are one entry rather than two. Anything checking
+        whether a stream is already cached must build the key through here: a
+        hand-written key in the requested order silently never matches, reports
+        every activity as uncached, and spends the whole Strava rate limit
+        refetching what the vault already had.
+        """
+        types_list = [t.strip() for t in stream_types.split(",")]
+        return f"streams:{activity_id}:{','.join(sorted(types_list))}"
+
     async def get_activity_streams(
         self,
         activity_id: int,
@@ -249,10 +280,8 @@ class CacheManager:
     ) -> dict:
         """Return activity streams, cached for 7 days."""
         types_list = [t.strip() for t in stream_types.split(",")]
-        sorted_types = sorted(types_list)
-        sorted_key = ",".join(sorted_types)
 
-        key = f"streams:{activity_id}:{sorted_key}"
+        key = self.stream_cache_key(activity_id, stream_types)
         category = "activity_streams"
 
         cached = await self.db.get_cached(key)

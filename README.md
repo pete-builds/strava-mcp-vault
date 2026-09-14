@@ -56,6 +56,9 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 | `set_ride_spot` | Name a riding location so it can be published | none |
 | `list_ride_spots` | Show the curated spots the export may publish | none |
 | `export_ride_spots` | Curated ride spots as JSON for a public page | none |
+| `get_route_track` | Full-resolution route geometry, clipped, for GPX | 7 days |
+| `sync_route_tracks` | Warm the stream cache one rate-limited batch at a time | varies |
+| `export_spot_photos` | A photo per curated spot, EXIF location stripped | 7 days |
 
 ## Publishing ride spots
 
@@ -85,6 +88,44 @@ guarantee is removed:
 
 Curated spots live in their own `ride_spots` table, so `sync_activities` cannot
 wipe them the way it wipes `set_activity_location` overrides.
+
+### Route tracks, and why they are clipped
+
+`get_route_track` exists because `summary_polyline` is decimated: it is enough to
+draw a line on a map and not enough for a GPX you would follow. The `latlng`
+stream behind it is full resolution and carries elevation.
+
+**The stream is not privacy-zone trimmed and the polyline is.** Across the 256
+activities in one real vault, the gap between `start_latlng` and the first point
+of `summary_polyline` had a median of 344 ft and a p90 of 954 ft, while 95 of
+256 sat within 50 ft. So Strava does hide the start of many activities, does it
+inconsistently, and hides it only in the polyline. Emitting a raw stream
+republishes every start Strava was concealing, on routes that look unchanged.
+
+So the polyline is treated as the authority for where a route may begin and end,
+and the stream is clipped to it. Where the recording cannot be matched to its
+polyline the tool refuses rather than guessing, because a track nobody can bound
+is one that may expose a trimmed start.
+
+Defaults are tuned for files you can actually ship: 5 m simplification (inside
+phone GPS noise, so it removes jitter rather than shape), 5 decimal places, and
+elevation kept with timestamps off. A 5,000 point recording becomes about 300
+points, which is roughly 4 MB across 175 rides instead of 87 MB.
+
+`sync_route_tracks` warms the cache in batches, defaulting to 80 to stay inside
+Strava's 100-per-15-minutes limit. Streams cache for 7 days.
+
+### Photos
+
+`export_spot_photos` picks a photo per curated spot for a page to self-host.
+Strava's photo URLs are CDN renditions that rotate, so download them rather than
+hotlinking.
+
+**Every Strava photo carries an EXIF `location`**, a full-precision coordinate of
+where the shutter was pressed. It is unrelated to the trimmed route, and on a
+photo taken before setting off it is the athlete's front door. It is stripped
+here rather than left to a caller to remember, and `tests/test_photos.py` fails
+if it ever survives.
 
 ```
 set_ride_spot(name="Shindagin Hollow", lat=42.3451, lon=-76.3505, radius_miles=1.0)
