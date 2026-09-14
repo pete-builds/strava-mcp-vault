@@ -24,6 +24,7 @@ from strava_mcp_vault.formatters import (
     format_sync_result,
     format_vault_query,
 )
+from strava_mcp_vault.spots import build_export, format_export, format_spot_list
 
 load_dotenv()
 logging.basicConfig(
@@ -388,6 +389,110 @@ async def delete_vault_activity(activity_ids: list[int]) -> str:
 
     deleted = await manager.db.delete_activities(activity_ids)
     return format_delete_activities(deleted, activity_ids)
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+async def set_ride_spot(
+    name: str,
+    lat: float,
+    lon: float,
+    radius_miles: float = 1.0,
+    blurb: str | None = None,
+    remove: bool = False,
+) -> str:
+    """Name a riding location so it becomes eligible for the public export.
+
+    export_ride_spots publishes ONLY the spots curated here. Nothing is named
+    automatically, because the largest cluster of ride start points in this vault
+    is a neighborhood rather than a trailhead, and an auto-naming export would
+    publish a home address first. Naming a spot is therefore a deliberate act.
+
+    Pick the coordinate of the trailhead or parking area you want a map pin on,
+    not the coordinate of a ride start. The pin published for a spot is this
+    coordinate, and no recorded GPS start point is ever exported.
+
+    Stored in its own table, so sync_activities cannot wipe it the way it wipes
+    set_activity_location overrides. Returns a confirmation line.
+
+    Args:
+        name: Display name for the spot (e.g. "Shindagin Hollow").
+        lat: Latitude of the map pin, in decimal degrees.
+        lon: Longitude of the map pin, in decimal degrees.
+        radius_miles: Rides starting within this distance belong to the spot (default 1.0).
+        blurb: Optional one-line description for the page.
+        remove: If true, delete this spot instead of creating or updating it.
+    """
+    name = (name or "").strip()
+    if not name:
+        return "A spot name is required, e.g. 'Shindagin Hollow'."
+
+    if remove:
+        deleted = await manager.db.delete_ride_spot(name)
+        if not deleted:
+            return f'No ride spot named "{name}".'
+        return f'✅ Removed ride spot "{name}". It will no longer be exported.'
+
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        return f"Coordinates out of range: lat={lat}, lon={lon}."
+    if radius_miles <= 0 or radius_miles > 25:
+        return "radius_miles must be greater than 0 and 25 or less."
+
+    await manager.db.upsert_ride_spot(name, lat, lon, radius_miles, blurb)
+    return f'✅ Ride spot "{name}" set at ({lat:.4f}, {lon:.4f}), radius {radius_miles} mi.'
+
+
+@mcp.tool(annotations=READ_LOCAL)
+async def list_ride_spots() -> str:
+    """Show the curated ride spots that the public export is allowed to publish."""
+    spots = await manager.db.get_ride_spots()
+    return format_spot_list(spots)
+
+
+@mcp.tool(annotations=READ_LOCAL)
+async def export_ride_spots(
+    sport_types: str = "Ride,MountainBikeRide,GravelRide",
+    after: str | None = None,
+    before: str | None = None,
+) -> str:
+    """Export curated ride spots as JSON for a public web page to render.
+
+    Returns a JSON string: `generated_at`, the `filters` applied, a `privacy`
+    block, `totals`, an `unassigned_rides` count, and a `spots` array. Each spot
+    carries name, slug, pin lat/lon, ride count, total miles, total elevation,
+    first and last ride dates, a sport-type breakdown, and an `activities` array
+    whose entries hold id, name, date, distance, elevation and the encoded
+    `polyline` for drawing the trace.
+
+    Three guarantees this export makes, because its output is meant to be public:
+    only activities Strava marks visible to everyone are included, and anything
+    with a missing or unrecognized visibility is withheld; only spots named via
+    set_ride_spot appear, with no automatic fallback naming; and no recorded start
+    coordinate is ever emitted, only route polylines plus the curated pin. Rides
+    matching no curated spot are reported as a bare count.
+
+    Reads the local vault only. Makes no Strava API calls.
+
+    Args:
+        sport_types: Comma-separated activity types to include.
+        after: Only rides on or after this date (ISO format, e.g. "2025-01-01").
+        before: Only rides before this date (ISO format, e.g. "2026-01-01").
+    """
+    types = [t.strip() for t in (sport_types or "").split(",") if t.strip()]
+    if not types:
+        return "At least one sport_type is required, e.g. 'Ride,MountainBikeRide,GravelRide'."
+
+    spots = await manager.db.get_ride_spots()
+    if not spots:
+        return (
+            "No ride spots curated yet, so there is nothing publishable to export.\n"
+            "Name at least one with set_ride_spot first."
+        )
+
+    activities = await manager.db.get_public_activities_with_geometry(
+        types, after=after, before=before
+    )
+    payload = build_export(activities, spots, types, after=after, before=before)
+    return format_export(payload)
 
 
 @mcp.tool(annotations=SYNC)
