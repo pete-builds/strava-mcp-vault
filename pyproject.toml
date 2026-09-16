@@ -27,7 +27,7 @@ classifiers = [
 # requirements-dev.txt used to carry these pins in parallel; two surfaces drift,
 # so they are deleted and the image, CI, and Dependabot all read this table.
 dependencies = [
-    "mcp[cli]==2.1.1",
+    "mcp[cli]==2.2.0",
     "httpx==0.28.1",
     "aiosqlite==0.22.1",
     "python-dotenv==1.2.3",
@@ -41,7 +41,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov>=7.1.0",
     "respx==0.23.1",
-    "ruff==0.16.6",
+    "ruff==0.16.7",
 ]
 
 [project.scripts]
