@@ -31,7 +31,7 @@ dependencies = [
     "httpx==0.28.1",
     "aiosqlite==0.22.1",
     "python-dotenv==1.2.3",
-    "uvicorn==0.52.4",
+    "uvicorn==0.53.0",
     "cryptography==50.0.1",
 ]
 
@@ -41,7 +41,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov>=7.1.0",
     "respx==0.23.1",
-    "ruff==0.16.7",
+    "ruff==0.16.8",
 ]
 
 [project.scripts]
