@@ -41,7 +41,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov>=7.1.0",
     "respx==0.23.1",
-    "ruff==0.16.10",
+    "ruff==0.17.0",
 ]
 
 [project.scripts]
