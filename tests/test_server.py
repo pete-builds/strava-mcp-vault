@@ -181,7 +181,7 @@ async def test_set_activity_location_not_found(mock_manager):
     [
         ("sync_activities", {"mode": "full"}, "days_back"),
         ("check_vault", {"start": "2026-01-01"}, "after, before, sport_types"),
-        ("repair_vault", {"delete": True}, "after, before, delete_gone, sport_types"),
+        ("repair_vault", {"delete": True}, "after, before, delete_gone, max_delete, sport_types"),
         ("get_cache_stats", {"verbose": True}, "no arguments"),
     ],
 )

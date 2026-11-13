@@ -347,17 +347,35 @@ check_vault(after="2026-01-01", sport_types="Ride,MountainBikeRide,GravelRide")
 
 It reads Strava's activity list for that window (about one call per 200
 activities), changes nothing, and reports each side's count and distance, a
-per-month table, every activity on Strava that the vault lacks, and every vault
-activity Strava no longer has. Leave out `after` and `before` to check the whole
-account.
+per-month table, every activity on Strava that the vault lacks, every activity
+re-dated or re-typed on Strava, and every vault activity missing from Strava's
+list. It says the vault matches only when the counts agree and the distances
+agree within a metre. Leave out `after` and `before` to check the whole account.
 
 To fix what it found, run `repair_vault` with the same arguments. It stores the
 activities through the same update a sync uses, so a location you set with
-`set_activity_location` is kept. Activities gone from Strava are listed and kept;
-they are deleted only if you also pass `delete_gone=true`, and only when the
-check read the whole window. If your Strava app's token was ever granted wider
-access than it has now (for example private activities), what it can no longer
-see will look "gone", so read that list before deleting.
+`set_activity_location` is kept. If Strava answers for a different athlete than
+the vault belongs to (a token from another account), it stores and deletes
+nothing.
+
+Activities missing from Strava's list are kept. A ride can be absent from the
+list because the token cannot see it or because Strava's answer was incomplete,
+so `delete_gone=true` deletes one only when all of these hold: the whole window
+was read, Strava's side of it is not empty, the number to delete is at most 10
+or 5 percent of the window (whichever is larger; `max_delete` changes that for
+one run), the ride was not stored as private, and Strava answers 404 when asked
+for that ride by id. Anything else keeps the ride and the report says why.
+
+**Back up the vault before using `delete_gone`.** With the shipped
+`docker-compose.yml` and the default `VAULT_DB_PATH`, this writes a consistent
+copy next to the vault on the `strava-data` volume (SQLite's own backup, which
+includes the WAL; do not `docker cp` the live file):
+
+```bash
+docker exec strava-mcp-vault python -c "import sqlite3; sqlite3.connect('/app/data/vault.db').backup(sqlite3.connect('/app/data/vault-backup.db'))"
+```
+
+If you run it some other way, back up the vault file first.
 
 Strava allows 100 read calls per 15 minutes and 1,000 a day. The check stops
 while 5 are still left, says how far it got, and prints the exact call to

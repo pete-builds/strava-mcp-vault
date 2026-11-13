@@ -12,12 +12,23 @@ Vault vs Cache:
 """
 
 import logging
+import math
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from strava_mcp_vault.exceptions import RateLimitError
+from strava_mcp_vault.exceptions import (
+    RateLimitError,
+    ReadBudgetExhausted,
+    StravaAPIError,
+    VaultError,
+)
 
 METERS_PER_MILE = 1609.344
+
+#: Without max_delete, one repair deletes at most this many activities, or
+#: DELETE_CAP_SHARE of the window's vault activities if that is larger.
+DELETE_CAP_MIN = 10
+DELETE_CAP_SHARE = 0.05
 
 #: Strava's list endpoint returns at most 200 activities a call.
 LIST_PAGE_SIZE = 200
@@ -48,19 +59,35 @@ def _epoch_to_iso(epoch: int | None) -> str | None:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _normalise_date(label: str, value: str | None) -> str | None:
+    """Turn any ISO date into YYYY-MM-DD, or YYYY-MM-DDTHH:MM:SS if a time was given.
+
+    The window is compared as text against start_date_local, so "20260101"
+    left as typed would sort after every real date and match nothing.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(
+            f'{label}="{value}" is not an ISO date. Use a form like "2026-01-01".'
+        ) from None
+    has_time = any(c in value for c in "Tt ")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") if has_time else dt.strftime("%Y-%m-%d")
+
+
+def _shift_day(local: str, days: int) -> str:
+    """A local timestamp moved by whole days, as YYYY-MM-DDTHH:MM:SS."""
+    dt = datetime.fromisoformat(local).replace(tzinfo=None) + timedelta(days=days)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def parse_window(after: str | None, before: str | None) -> tuple[str | None, str | None]:
-    """Validate a check window. Raises ValueError with a message for the user."""
-    after = (after or "").strip() or None
-    before = (before or "").strip() or None
-    for label, value in (("after", after), ("before", before)):
-        if value is None:
-            continue
-        try:
-            datetime.fromisoformat(value)
-        except ValueError:
-            raise ValueError(
-                f'{label}="{value}" is not an ISO date. Use a form like "2026-01-01".'
-            ) from None
+    """Validate and normalise a check window. Raises ValueError for the user."""
+    after = _normalise_date("after", after)
+    before = _normalise_date("before", before)
     if after and before and _to_epoch(after) >= _to_epoch(before):
         raise ValueError(f'after ("{after}") must be earlier than before ("{before}").')
     return after, before
@@ -446,16 +473,7 @@ class CacheManager:
         except Exception as e:
             # Nothing was stored, but the attempt is dated, so a later hole
             # can be traced to the night the sync failed.
-            await self.db.add_sync_history(
-                started_at,
-                mode,
-                window_after,
-                None,
-                added=0,
-                updated=0,
-                completed=False,
-                note=f"{type(e).__name__}: {e}"[:300],
-            )
+            await self._record_failure(started_at, mode, window_after, None, e)
             raise
 
         # Store in vault (permanent). Nothing goes into the activity_detail
@@ -501,6 +519,30 @@ class CacheManager:
 
         return result
 
+    async def _record_failure(
+        self,
+        started_at: float,
+        mode: str,
+        window_after: str | None,
+        window_before: str | None,
+        error: Exception,
+    ) -> None:
+        """Date a failed run in the history. Never raises: the caller is
+        already handling the real error, and a failed write must not hide it."""
+        try:
+            await self.db.add_sync_history(
+                started_at,
+                mode,
+                window_after,
+                window_before,
+                added=0,
+                updated=0,
+                completed=False,
+                note=f"{type(error).__name__}: {error}"[:300],
+            )
+        except Exception:
+            logger.exception("Could not record the failed %s in sync_history", mode)
+
     # ------------------------------------------------------------------
     # Vault check and repair
     # ------------------------------------------------------------------
@@ -513,7 +555,8 @@ class CacheManager:
         Returns (activities in the order Strava sent them, calls made, the
         reason it stopped early or None). Never raises a rate limit: it stops
         before the read budget runs out, and a 429 or a local refusal ends the
-        scan with whatever it had.
+        scan with whatever it had. Any other error (a 500, a network failure)
+        is raised: an error page is never mistaken for the end of the list.
         """
         after_epoch = max(0, _to_epoch(after) - _WINDOW_PAD_SECONDS) if after else 0
         before_epoch = _to_epoch(before) + _WINDOW_PAD_SECONDS if before else None
@@ -536,6 +579,8 @@ class CacheManager:
                     page=page, per_page=LIST_PAGE_SIZE, after=after_epoch, before=before_epoch
                 )
             except RateLimitError as e:
+                if not isinstance(e, ReadBudgetExhausted):
+                    calls += 1  # a 429 reached Strava; a local refusal did not
                 return fetched, calls, str(e)
             calls += 1
             if not batch:
@@ -545,8 +590,11 @@ class CacheManager:
 
     async def _check(
         self, after: str | None, before: str | None, sport_types: list[str]
-    ) -> tuple[dict, list[dict]]:
-        """Compare Strava with the vault. Returns (report, Strava activities checked)."""
+    ) -> tuple[dict, list[dict], list[dict]]:
+        """Compare Strava with the vault.
+
+        Returns (report, activities a repair should store, everything fetched).
+        """
         fetched, calls, stop_reason = await self._scan_strava(after, before)
         complete = stop_reason is None
 
@@ -560,8 +608,9 @@ class CacheManager:
 
         # On a stopped scan only the stretch Strava actually sent is compared.
         # Strava pages oldest first when given `after`; the order is read from
-        # the data rather than assumed, so a reversed order would make the
-        # resume point `before` instead of skipping what was never fetched.
+        # the data rather than assumed. The resume point overlaps a day, since
+        # a rider who crossed time zones can have a later ride with an earlier
+        # local time; the upsert makes re-reading that day harmless.
         checked_through = None
         resume = None
         cutoff_low = cutoff_high = None
@@ -572,10 +621,10 @@ class CacheManager:
                 checked_through = last.get("start_date_local")
                 if ascending:
                     cutoff_high = checked_through
-                    resume = {"after": checked_through, "before": before}
+                    resume = {"after": _shift_day(checked_through, -1), "before": before}
                 else:
                     cutoff_low = checked_through
-                    resume = {"after": after, "before": checked_through}
+                    resume = {"after": after, "before": _shift_day(checked_through, 1)}
             else:
                 resume = {"after": after, "before": before}
 
@@ -606,13 +655,24 @@ class CacheManager:
             (a for i, a in strava.items() if i not in in_vault),
             key=lambda a: a.get("start_date_local") or "",
         )
+        # A vault row Strava did send, but which now falls outside the window
+        # or the sport filter: re-dated or re-typed on Strava. It is not gone.
+        fetched_by_id = {a["id"]: a for a in fetched}
+        changed = [
+            {
+                **_brief(fetched_by_id[r["id"]]),
+                "was_start_date_local": r["start_date_local"],
+                "was_sport_type": r["sport_type"],
+            }
+            for r in vault_rows
+            if r["id"] in fetched_by_id and r["id"] not in strava
+        ]
         # "Gone" needs the whole window seen: on a stopped scan an activity
         # not fetched yet would look deleted. Compared against EVERY id
-        # fetched, so an activity whose date moved on Strava is not flagged.
+        # fetched, so an activity re-dated or re-typed on Strava is not flagged.
         gone = None
         if complete:
-            seen_ids = {a["id"] for a in fetched}
-            gone = [r for r in vault_rows if r["id"] not in seen_ids]
+            gone = [r for r in vault_rows if r["id"] not in fetched_by_id]
 
         months: dict[str, dict] = {}
         for a in strava.values():
@@ -626,26 +686,88 @@ class CacheManager:
         for r in gone or []:
             months[(r["start_date_local"] or "")[:7]]["gone"] += 1
 
+        strava_side = {
+            "count": len(strava),
+            "distance_meters": sum((a.get("distance") or 0) for a in strava.values()),
+        }
+        vault_side = {
+            "count": len(vault_rows),
+            "distance_meters": sum(r["distance"] for r in vault_rows),
+        }
+        matches = (
+            complete
+            and not missing
+            and not gone
+            and not changed
+            and strava_side["count"] == vault_side["count"]
+            and abs(strava_side["distance_meters"] - vault_side["distance_meters"]) <= 1.0
+        )
+
         report = {
             "window": {"after": after, "before": before, "sport_types": sport_types},
             "complete": complete,
+            "matches": matches,
             "stop_reason": stop_reason,
             "checked_through": checked_through,
             "resume": resume,
             "api_calls": calls,
-            "strava": {
-                "count": len(strava),
-                "distance_meters": sum((a.get("distance") or 0) for a in strava.values()),
-            },
-            "vault": {
-                "count": len(vault_rows),
-                "distance_meters": sum(r["distance"] for r in vault_rows),
-            },
+            "athlete_warning": await self._athlete_mismatch(fetched, may_ask=False),
+            "strava": strava_side,
+            "vault": vault_side,
             "months": [{"month": k, **v} for k, v in sorted(months.items())],
             "missing": [_brief(a) for a in missing],
+            "changed": changed,
             "gone": gone,
         }
-        return report, list(strava.values())
+        # A repair refreshes every vault row Strava sent, not only the ones
+        # still inside the filter, so a re-typed or re-dated ride is corrected.
+        vault_ids = {r["id"] for r in vault_rows}
+        to_store = list(strava.values()) + [
+            a for i, a in fetched_by_id.items() if i in vault_ids and i not in strava
+        ]
+        return report, to_store, fetched
+
+    async def _athlete_mismatch(self, fetched: list[dict], *, may_ask: bool) -> str | None:
+        """Say why these activities may belong to someone else, or None.
+
+        The vault's athlete is the one on its stored rows, or, for a vault
+        whose rows do not carry one, the athlete recorded on first use. When
+        neither side names an athlete and may_ask is set, this asks Strava who
+        the token belongs to (one read call) and records it.
+        """
+        if not fetched:
+            return None
+        expected = await self.db.get_vault_athlete_ids()
+        if len(expected) > 1:
+            return (
+                "the vault already holds activities from more than one Strava athlete "
+                f"({', '.join(str(i) for i in sorted(expected))})"
+            )
+        if not expected:
+            stored = await self.db.get_meta("athlete_id")
+            if stored:
+                expected = {int(stored)}
+        seen = {i for i in (_athlete_id(a) for a in fetched) if i is not None}
+        if not seen or not expected:
+            if not may_ask:
+                return None
+            try:
+                me = _int_or_none((await self.client.get_athlete()).get("id"))
+            except VaultError as e:
+                return f"Strava could not confirm which athlete the token belongs to ({e})"
+            if me is None:
+                return "Strava did not say which athlete the token belongs to"
+            seen.add(me)
+            if not expected:
+                await self.db.set_meta("athlete_id", str(me))
+                expected = {me}
+        strangers = seen - expected
+        if strangers:
+            return (
+                f"Strava answered for athlete {', '.join(str(i) for i in sorted(strangers))}, "
+                f"but this vault belongs to athlete {', '.join(str(i) for i in sorted(expected))}"
+            )
+        return None
 
     async def check_vault(
         self,
@@ -656,17 +778,17 @@ class CacheManager:
         """Compare the vault with Strava over a local-date window. Writes nothing.
 
         Reads Strava's activity list (about one call per 200 activities) and
-        reports what is on Strava but missing from the vault, what is in the
-        vault but gone from Strava, per-month counts for both sides, and each
-        side's count and distance. If the read budget runs low it stops,
-        reports how far it got, and says how to resume.
+        reports what is on Strava but missing from the vault, what changed on
+        Strava, what is in the vault but not in Strava's list, per-month counts
+        for both sides, and each side's count and distance. If the read budget
+        runs low it stops, reports how far it got, and says how to resume.
 
         Callable from Python as well as through the MCP tool, e.g. from a
         nightly script: ``report = await manager.check_vault(after="2026-01-01")``.
         """
         after, before = parse_window(after, before)
         types = sport_types if isinstance(sport_types, list) else parse_sport_types(sport_types)
-        report, _ = await self._check(after, before, types)
+        report, _, _ = await self._check(after, before, types)
         return report
 
     async def repair_vault(
@@ -675,66 +797,193 @@ class CacheManager:
         before: str | None = None,
         sport_types: str | list[str] | None = None,
         delete_gone: bool = False,
+        max_delete: int | None = None,
     ) -> dict:
         """Run a check, then put back what the vault is missing.
 
-        Every Strava activity the check saw in the window is stored through
-        the same upsert sync uses, so missing ones are added and present ones
-        refreshed with any hand-set location kept. Activities gone from Strava
-        are only listed, unless delete_gone is set AND the check covered the
-        whole window, in which case they are removed in one transaction.
+        Every Strava activity the check saw in the window, and every vault row
+        in the window Strava sent, is stored through the same upsert sync uses:
+        missing ones are added, the rest refreshed, hand-set locations kept.
+        Nothing is stored or deleted if Strava answers for a different athlete.
+
+        With delete_gone, a vault activity missing from Strava's list is
+        deleted only if the whole window was read, Strava's side of it is not
+        empty, the count is within the cap (max_delete, else the larger of 10
+        and 5 percent of the window), it was not stored as private, and Strava
+        answers 404 for that id. Anything else keeps the row and says why.
 
         A run cut short by the read budget stores what it fetched, which the
         upsert makes safe to repeat, and the report says where to resume.
         """
-        started_at = time.time()
         after, before = parse_window(after, before)
         types = sport_types if isinstance(sport_types, list) else parse_sport_types(sport_types)
-        report, strava = await self._check(after, before, types)
+        if max_delete is not None and max_delete < 0:
+            raise ValueError("max_delete must be 0 or more.")
+        started_at = time.time()
+        try:
+            return await self._repair(started_at, after, before, types, delete_gone, max_delete)
+        except Exception as e:
+            await self._record_failure(started_at, "repair", after, before, e)
+            raise
 
-        ids = [a["id"] for a in strava]
-        existed = await self.db.get_existing_ids(ids)
-        if strava:
-            await self.db.upsert_activities_batch(strava)
-        added = [a["id"] for a in strava if a["id"] not in existed]
+    async def _repair(
+        self,
+        started_at: float,
+        after: str | None,
+        before: str | None,
+        types: list[str],
+        delete_gone: bool,
+        max_delete: int | None,
+    ) -> dict:
+        report, to_store, fetched = await self._check(after, before, types)
+        repair = {
+            "added": [],
+            "updated": 0,
+            "removed": [],
+            "kept": [],
+            "would_delete": [],
+            "refused": None,
+            "delete_requested": delete_gone,
+            "delete_note": None,
+        }
+        report["repair"] = repair
 
-        removed: list[dict] = []
-        delete_note = None
-        if delete_gone:
-            if not report["complete"]:
-                delete_note = (
-                    "Nothing was deleted: the check stopped early, so an activity not "
-                    "fetched yet could look deleted. Run the full window again."
-                )
-            elif report["gone"]:
-                removed = await self.db.delete_activities_reporting(
-                    [r["id"] for r in report["gone"]]
-                )
+        refused = await self._athlete_mismatch(fetched, may_ask=True)
+        if refused:
+            repair["refused"] = refused
+        else:
+            existed = await self.db.get_existing_ids([a["id"] for a in to_store])
+            if to_store:
+                await self.db.upsert_activities_batch(to_store)
+            repair["added"] = [a["id"] for a in to_store if a["id"] not in existed]
+            repair["updated"] = len(existed)
+            if delete_gone:
+                await self._delete_gone(report, max_delete)
 
         after_rows = await self.db.get_vault_index(after, before, types or None)
-        report["repair"] = {
-            "added": added,
-            "updated": len(existed),
-            "removed": removed,
-            "delete_requested": delete_gone,
-            "delete_note": delete_note,
-            "vault_after": {
-                "count": len(after_rows),
-                "distance_meters": sum(r["distance"] for r in after_rows),
-            },
+        repair["vault_after"] = {
+            "count": len(after_rows),
+            "distance_meters": sum(r["distance"] for r in after_rows),
         }
         await self.db.add_sync_history(
             started_at,
             "repair",
             after,
             before,
-            added=len(added),
-            updated=len(existed),
-            removed=len(removed),
-            completed=report["complete"],
-            note=report["stop_reason"],
+            added=len(repair["added"]),
+            updated=repair["updated"],
+            removed=len(repair["removed"]),
+            completed=report["complete"] and not refused,
+            note=refused or report["stop_reason"] or repair["delete_note"],
         )
         return report
+
+    async def _delete_gone(self, report: dict, max_delete: int | None) -> None:
+        """Delete the vault rows Strava confirms, one by one, no longer exist."""
+        repair = report["repair"]
+        gone = report["gone"]
+        if not report["complete"]:
+            repair["delete_note"] = (
+                "Nothing was deleted: the check stopped early, so an activity not "
+                "fetched yet could look deleted."
+            )
+            return
+        if not gone:
+            return
+        ids = [r["id"] for r in gone]
+        if report["strava"]["count"] == 0:
+            repair["would_delete"] = ids
+            repair["delete_note"] = (
+                "Nothing was deleted: Strava returned no activities for this window, "
+                "which is more likely an incomplete answer than a deleted history."
+            )
+            return
+        cap = (
+            max_delete
+            if max_delete is not None
+            else max(DELETE_CAP_MIN, math.ceil(DELETE_CAP_SHARE * report["vault"]["count"]))
+        )
+        if len(ids) > cap:
+            repair["would_delete"] = ids
+            repair["delete_note"] = (
+                f"Nothing was deleted: {len(ids)} activities would go, more than the limit "
+                f"of {cap}. The max_delete argument raises the limit for one run."
+            )
+            return
+
+        confirmed: list[int] = []
+        stopped = None
+        for row in gone:
+            if stopped:
+                repair["kept"].append({"id": row["id"], "reason": "not confirmed: " + stopped})
+                continue
+            if row["private"]:
+                repair["kept"].append(
+                    {
+                        "id": row["id"],
+                        "reason": "stored as private, which a token without "
+                        "activity:read_all cannot see, so its absence proves nothing",
+                    }
+                )
+                continue
+            remaining = self.client.read_budget_remaining()
+            if remaining is not None and remaining <= CHECK_READ_RESERVE:
+                stopped = (
+                    f"the Strava read budget is down to {remaining}; "
+                    f"{self.client.read_budget_reset_text()}"
+                )
+                repair["kept"].append({"id": row["id"], "reason": "not confirmed: " + stopped})
+                continue
+            try:
+                await self.client.get_activity(row["id"])
+            except StravaAPIError as e:
+                report["api_calls"] += 1
+                if e.status_code == 404:
+                    confirmed.append(row["id"])
+                else:
+                    repair["kept"].append(
+                        {"id": row["id"], "reason": f"Strava answered {e.status_code} for it"}
+                    )
+                continue
+            except RateLimitError as e:
+                if not isinstance(e, ReadBudgetExhausted):
+                    report["api_calls"] += 1
+                stopped = f"the Strava read limit was reached ({e})"
+                repair["kept"].append({"id": row["id"], "reason": "not confirmed: " + stopped})
+                continue
+            except Exception as e:  # network trouble: keep the row
+                repair["kept"].append(
+                    {"id": row["id"], "reason": f"Strava could not be reached ({type(e).__name__})"}
+                )
+                continue
+            report["api_calls"] += 1
+            repair["kept"].append(
+                {
+                    "id": row["id"],
+                    "reason": "still on Strava: it answered for this id, so the list "
+                    "probably changed while it was being read",
+                }
+            )
+
+        if stopped:
+            repair["delete_note"] = (
+                f"Stopped confirming because {stopped}. The rest were kept; nothing "
+                "further was deleted."
+            )
+        if confirmed:
+            repair["removed"] = await self.db.delete_activities_reporting(confirmed)
+
+
+def _int_or_none(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _athlete_id(activity: dict) -> int | None:
+    athlete = activity.get("athlete")
+    return _int_or_none(athlete.get("id")) if isinstance(athlete, dict) else None
 
 
 def _month_row() -> dict:

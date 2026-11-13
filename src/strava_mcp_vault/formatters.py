@@ -992,6 +992,19 @@ def _call_args(args: dict) -> str:
     return ", ".join(f'{k}="{v}"' for k, v in args.items() if v)
 
 
+def _section(lines: list[str], title: str, rows: list[dict], render) -> None:
+    lines.append(f"### {title} ({len(rows)})\n")
+    lines.extend(render(r) for r in rows[:_LIST_LIMIT])
+    if len(rows) > _LIST_LIMIT:
+        lines.append(f"- ...and {len(rows) - _LIST_LIMIT} more")
+    lines.append("")
+
+
+def _changed_line(c: dict) -> str:
+    was = f"{(c.get('was_start_date_local') or '')[:10]} {c.get('was_sport_type') or '?'}"
+    return f"{_activity_line(c)}; the vault has it as {was}"
+
+
 def format_vault_check(report: dict) -> str:
     """Format a check_vault or repair_vault report as markdown."""
     window = report["window"]
@@ -1001,30 +1014,44 @@ def format_vault_check(report: dict) -> str:
     title = "Vault repair" if repair else "Vault check"
     lines = [f"## {title}: {span}" + (f", {', '.join(types)}" if types else "") + "\n"]
 
-    missing, gone = report["missing"], report["gone"]
+    if report.get("athlete_warning"):
+        lines.append(
+            f"**Different Strava account:** {report['athlete_warning']}. The token in use "
+            "may not be the vault owner's.\n"
+        )
+
+    missing, gone, changed = report["missing"], report["gone"], report.get("changed") or []
+    s, v = report["strava"], report["vault"]
     if not report["complete"]:
         lines.append(
             f"**Stopped early:** {report['stop_reason']}. "
             f"Strava was checked through {report.get('checked_through') or 'nothing yet'}; "
             "the numbers below cover only that stretch.\n"
         )
-    elif not missing and not gone:
+    elif report.get("matches"):
         lines.append("**Result:** the vault matches Strava for this window.\n")
     else:
         parts = []
         if missing:
             parts.append(f"{_count(len(missing))} on Strava missing from the vault")
+        if changed:
+            parts.append(f"{_count(len(changed))} changed on Strava")
         if gone:
-            parts.append(f"{_count(len(gone))} in the vault but gone from Strava")
+            parts.append(f"{_count(len(gone))} in the vault but not in Strava's list")
+        if not parts:
+            parts.append(
+                f"the counts or distances differ (Strava {s['count']}, {_miles(s['distance_meters'])}; "
+                f"vault {v['count']}, {_miles(v['distance_meters'])}), so stored rides "
+                "differ from Strava's current versions"
+            )
         lines.append(f"**Result:** {'; '.join(parts)}.\n")
 
-    s, v = report["strava"], report["vault"]
     lines.append("| | Strava | Vault |")
     lines.append("|---|---|---|")
     lines.append(f"| Activities | {s['count']} | {v['count']} |")
     lines.append(f"| Distance | {_miles(s['distance_meters'])} | {_miles(v['distance_meters'])} |")
     lines.append("")
-    if repair:
+    if repair and "vault_after" in repair:
         after = repair["vault_after"]
         lines.append(
             f"**Vault after repair:** {_count(after['count'])}, "
@@ -1033,7 +1060,7 @@ def format_vault_check(report: dict) -> str:
 
     if report["months"]:
         lines.append("### By month\n")
-        lines.append("| Month | Strava | Vault | Missing | Gone from Strava |")
+        lines.append("| Month | Strava | Vault | Missing | Not in Strava's list |")
         lines.append("|---|---|---|---|---|")
         for m in report["months"]:
             gone_cell = m["gone"] if gone is not None else "not checked"
@@ -1044,38 +1071,48 @@ def format_vault_check(report: dict) -> str:
         lines.append("")
 
     if missing:
-        lines.append(f"### Missing from the vault ({len(missing)})\n")
-        lines.extend(_activity_line(a) for a in missing[:_LIST_LIMIT])
-        if len(missing) > _LIST_LIMIT:
-            lines.append(f"- ...and {len(missing) - _LIST_LIMIT} more")
-        lines.append("")
+        _section(lines, "Missing from the vault", missing, _activity_line)
+    if changed:
+        _section(
+            lines, "Changed on Strava (now outside this window or filter)", changed, _changed_line
+        )
 
     if gone is None:
         lines.append(
-            "### Gone from Strava\n\nNot checked: that needs the whole window read from "
-            "Strava, and this run stopped early.\n"
+            "### In the vault but not in Strava's list\n\nNot checked: that needs the whole "
+            "window read from Strava, and this run stopped early.\n"
         )
     elif gone:
-        lines.append(f"### In the vault but gone from Strava ({len(gone)})\n")
-        lines.extend(_activity_line(r) for r in gone[:_LIST_LIMIT])
-        if len(gone) > _LIST_LIMIT:
-            lines.append(f"- ...and {len(gone) - _LIST_LIMIT} more")
-        lines.append("")
+        _section(lines, "In the vault but not in Strava's list", gone, _activity_line)
+        lines.append(
+            "These are kept. A ride can be absent from Strava's list because the token "
+            "cannot see it (its scope, or a private ride) or because Strava's answer was "
+            "incomplete, so a deletion is only made after Strava confirms, ride by ride, "
+            "that the activity no longer exists.\n"
+        )
 
     if repair:
         lines.append("### What the repair did\n")
-        lines.append(f"- **Added:** {len(repair['added'])}")
-        lines.append(f"- **Refreshed (hand-set locations kept):** {repair['updated']}")
+        if repair.get("refused"):
+            lines.append(f"- **Refused:** {repair['refused']}. Nothing was stored or deleted.")
+        else:
+            lines.append(f"- **Added:** {len(repair['added'])}")
+            lines.append(f"- **Refreshed (hand-set locations kept):** {repair['updated']}")
         if repair["removed"]:
-            lines.append(f"- **Removed ({len(repair['removed'])}):**")
-            lines.extend("  " + _activity_line(r) for r in repair["removed"])
-        elif repair.get("delete_note"):
-            lines.append(f"- **Removed:** none. {repair['delete_note']}")
-        elif gone:
             lines.append(
-                "- **Removed:** none. Activities gone from Strava are kept unless you "
-                "pass delete_gone=true."
+                f"- **Removed ({len(repair['removed'])}), each confirmed gone by Strava:**"
             )
+            lines.extend("  " + _activity_line(r) for r in repair["removed"])
+        elif gone and not repair.get("refused"):
+            lines.append("- **Removed:** none.")
+        if repair.get("kept"):
+            lines.append(f"- **Kept after checking with Strava ({len(repair['kept'])}):**")
+            lines.extend(f"  - id {k['id']}: {k['reason']}" for k in repair["kept"])
+        if repair.get("delete_note"):
+            lines.append(f"- {repair['delete_note']}")
+        if repair.get("would_delete"):
+            ids = ", ".join(str(i) for i in repair["would_delete"][:_LIST_LIMIT])
+            lines.append(f"- **Would have been deleted:** {ids}")
         lines.append("")
 
     lines.append(f"Strava read calls used: {report['api_calls']}.")
@@ -1084,7 +1121,7 @@ def format_vault_check(report: dict) -> str:
         args = _call_args({**resume, "sport_types": ",".join(types)})
         tool = "repair_vault" if repair else "check_vault"
         lines.append(f"To continue, run {tool}({args}) once the read limit resets.")
-    elif missing and not repair:
+    elif (missing or changed) and not repair:
         args = _call_args(
             {
                 "after": window.get("after"),
@@ -1092,7 +1129,7 @@ def format_vault_check(report: dict) -> str:
                 "sport_types": ",".join(types),
             }
         )
-        lines.append(f"To add the missing activities, run repair_vault({args}).")
+        lines.append(f"To add or refresh these activities, run repair_vault({args}).")
     return "\n".join(lines)
 
 

@@ -118,6 +118,13 @@ class CacheDB:
                 completed INTEGER NOT NULL DEFAULT 0,
                 note TEXT
             );
+
+            -- Small facts about the vault itself, such as which Strava athlete
+            -- it belongs to, recorded on first use. Additive, like sync_history.
+            CREATE TABLE IF NOT EXISTS vault_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -641,7 +648,9 @@ class CacheDB:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = await self._db.execute(
             "SELECT id, start_date_local, sport_type, json_extract(data, '$.distance'), "
-            "json_extract(data, '$.name'), location_override "
+            "json_extract(data, '$.name'), location_override, "
+            "COALESCE(json_extract(data, '$.private'), 0) "
+            "OR COALESCE(json_extract(data, '$.visibility'), '') = 'only_me' "
             f"FROM activities {where} ORDER BY start_date_local",
             params,
         )
@@ -653,9 +662,31 @@ class CacheDB:
                 "distance": row[3] or 0,
                 "name": row[4],
                 "location_override": row[5],
+                "private": bool(row[6]),
             }
             for row in await cursor.fetchall()
         ]
+
+    async def get_vault_athlete_ids(self) -> set[int]:
+        """The Strava athlete ids carried on the vault's stored activities."""
+        cursor = await self._db.execute(
+            "SELECT DISTINCT CAST(json_extract(data, '$.athlete.id') AS INTEGER) "
+            "FROM activities WHERE json_extract(data, '$.athlete.id') IS NOT NULL"
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
+    async def get_meta(self, key: str) -> str | None:
+        cursor = await self._db.execute("SELECT value FROM vault_meta WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def set_meta(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO vault_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self._db.commit()
 
     async def get_existing_ids(self, activity_ids: list[int]) -> set[int]:
         """Which of these ids the vault already holds."""

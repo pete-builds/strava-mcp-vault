@@ -704,11 +704,13 @@ async def check_vault(
     so a gap behind that point is never filled and every sync still reports
     success. This reads Strava's activity list for the window (about one call
     per 200 activities) and reports: activities on Strava but missing from the
-    vault, grouped by month; activities in the vault but gone from Strava;
+    vault, grouped by month; activities re-dated or re-typed on Strava;
+    activities in the vault but not in Strava's list;
     per-month counts for both sides; and each side's count and distance.
 
     It stops before Strava's read limit runs out and says how far it got and
     exactly what to run to continue. Fix what it finds with repair_vault.
+    "Matches" is printed only when counts agree and distances agree within 1 m.
 
     Args:
         after: Only activities on or after this local date (ISO, e.g. "2026-01-01").
@@ -742,28 +744,40 @@ async def repair_vault(
     before: str | None = None,
     sport_types: str | None = None,
     delete_gone: bool = False,
+    max_delete: int | None = None,
 ) -> str:
     """Run check_vault, then add what the vault is missing.
 
-    Every Strava activity in the window is stored through the same update sync
-    uses, so missing ones are added and the rest refreshed, and a location set
-    with set_activity_location is kept. No extra Strava calls beyond the check.
+    Every Strava activity in the window, and every vault activity in the window
+    that Strava still lists (even if re-dated or re-typed), is stored through the
+    same update sync uses: missing ones are added, the rest refreshed, and a
+    location set with set_activity_location is kept. If Strava answers for a
+    different athlete than the vault belongs to, nothing is stored or deleted.
 
-    Activities in the vault but gone from Strava are only listed. They are
-    deleted only with delete_gone=true, and only when the check read the whole
-    window; they go in one transaction and the report names each one. If the
-    read limit cuts a repair short, what was fetched is kept, the vault stays
-    consistent, and the report says what to run to continue.
+    Vault activities missing from Strava's list are kept by default. With
+    delete_gone=true, each one is deleted only if the whole window was read,
+    Strava's side of it is not empty, the count is within the cap, it was not
+    stored as private, and Strava answers 404 for that activity's id. Every
+    deletion and every activity kept is named in the report. Back up the vault
+    file before using delete_gone.
+
+    If the read limit cuts a repair short, what was fetched is kept, the vault
+    stays consistent, and the report says what to run to continue.
 
     Args:
         after: Only activities on or after this local date (ISO, e.g. "2026-05-01").
         before: Only activities before this local date (ISO, e.g. "2026-07-01").
         sport_types: Comma-separated types to repair (e.g. "Ride,GravelRide"). Default all.
-        delete_gone: Also delete vault activities that no longer exist on Strava. Default false.
+        delete_gone: Delete vault activities Strava confirms no longer exist. Default false.
+        max_delete: Most deletions allowed in this run. Default the larger of 10 and 5 percent of the window.
     """
     try:
         report = await manager.repair_vault(
-            after=after, before=before, sport_types=sport_types, delete_gone=delete_gone
+            after=after,
+            before=before,
+            sport_types=sport_types,
+            delete_gone=delete_gone,
+            max_delete=max_delete,
         )
         return format_vault_check(report)
     except ValueError as e:
