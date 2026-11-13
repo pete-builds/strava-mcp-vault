@@ -17,8 +17,9 @@ with a web browser:
    Anything else (a favicon, an idle or early-closed connection, a lookalike
    path) is answered 404 or dropped and does not count. A ``/callback`` with a
    wrong or missing ``state`` is refused (400, one line in the terminal,
-   nothing stored) and the wait goes on, so a web page cannot end the sign-in
-   by spraying guesses; after ``MAX_REFUSALS`` of them the command gives up.
+   nothing stored) and the wait goes on, so one stray or hostile request does
+   not end the sign-in. After ``MAX_REFUSALS`` of them the command gives up,
+   so a web page that keeps sending them can still end it, just not with one.
    The listener closes as soon as the right redirect arrives or the wait ends.
 5. It exchanges the code for tokens and stores them where the server will look:
 
@@ -83,6 +84,7 @@ LISTEN_HOST = "127.0.0.1"
 # the loopback address the listener is bound to.
 REDIRECT_HOST = "localhost"
 DEFAULT_TIMEOUT = 300
+MAX_TIMEOUT = 3600  # one hour; select() cannot take arbitrarily large values
 # Largest request head buffered per connection. Generous because a developer's
 # localhost cookies ride along on the redirect and can run to tens of KB.
 MAX_REQUEST_BYTES = 65536
@@ -95,6 +97,11 @@ MAX_QUERY_FIELDS = 20
 # /callback requests with the wrong state tolerated before giving up.
 MAX_REFUSALS = 10
 REFUSAL_LINE = "A request to /callback without this sign-in's state was refused; still waiting"
+# Said when /callback arrives with the wrong Host, so a rejected real browser is
+# not left with a bare "Not found" and then an unexplained timeout. Capped so a
+# sprayer cannot flood the terminal; these do not count toward MAX_REFUSALS.
+HOST_LINE = "A request to /callback with an unexpected Host header was ignored; still waiting"
+MAX_HOST_NOTICES = 3
 TOKEN_REQUEST_TIMEOUT = 30
 DEFAULT_DB_PATH = "/app/data/vault.db"  # same default as server._startup
 
@@ -222,7 +229,10 @@ def _parse_request_head(head: bytes):
         return None
     hosts = []
     for raw in lines[1:]:
-        name, sep, value = raw.rstrip(b"\r").decode("latin-1").partition(":")
+        line = raw.rstrip(b"\r")
+        if not line:  # end of headers; anything after is body
+            break
+        name, sep, value = line.decode("latin-1").partition(":")
         if sep and name.lower() == "host":
             hosts.append(value.strip().lower())
     host = hosts[0] if len(hosts) == 1 else None
@@ -245,6 +255,15 @@ def _respond(conn: socket.socket, status: str, page: bytes, deadline: float) -> 
         pass
 
 
+def _allowed_hosts(port: int) -> set:
+    """Host header values the callback is served for. Browsers leave the
+    default port out, so on port 80 the bare names are accepted too."""
+    hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    if port == 80:
+        hosts |= {"localhost", "127.0.0.1"}
+    return hosts
+
+
 def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: float, out):
     """Serve the listener until a GET /callback with the right state arrives.
 
@@ -254,8 +273,9 @@ def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: f
     the wait open past it, and an idle connection never blocks a ready one.
     """
     port = listener.getsockname()[1]
-    allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    allowed_hosts = _allowed_hosts(port)
     refusals = 0
+    host_notices = 0
     selector = selectors.DefaultSelector()
     buffers: dict = {}
 
@@ -307,14 +327,17 @@ def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: f
                 request = _parse_request_head(bytes(buffer))
                 selector.unregister(sock)
                 del buffers[sock]
-                if (
-                    request is None
-                    or request[0] != "GET"
-                    or request[1] != CALLBACK_PATH
-                    or request[3] not in allowed_hosts
-                ):
+                if request is None or request[0] != "GET" or request[1] != CALLBACK_PATH:
                     _respond(sock, "404 Not Found", _NOT_FOUND_PAGE, deadline)
                     sock.close()
+                    continue
+                if request[3] not in allowed_hosts:
+                    _respond(sock, "404 Not Found", _NOT_FOUND_PAGE, deadline)
+                    sock.close()
+                    if host_notices < MAX_HOST_NOTICES:  # the Host value is not echoed
+                        host_notices += 1
+                        print(HOST_LINE, file=out)
+                        out.flush()
                     continue
                 query = request[2]
                 if _state_matches(query, expected_state):
@@ -322,8 +345,10 @@ def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: f
                     sock.close()
                     return query
                 # Wrong or missing state. State is 256 random bits, so a guess
-                # cannot win; ending here would only hand any web page a way to
-                # kill the sign-in. Refuse it and keep waiting.
+                # cannot win. Ending here would let one stray request end the
+                # sign-in; waiting raises that to MAX_REFUSALS requests. That is
+                # a nuisance limit, not a defence: a page that keeps sending
+                # them can still end it.
                 _respond(sock, "400 Bad Request", _REFUSED_PAGE, deadline)
                 sock.close()
                 refusals += 1
@@ -747,6 +772,9 @@ def main(
         return 2
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         print("--timeout must be a number of seconds more than zero.", file=sys.stderr)
+        return 2
+    if args.timeout > MAX_TIMEOUT:
+        print(f"--timeout can be at most {MAX_TIMEOUT} seconds.", file=sys.stderr)
         return 2
     if open_browser is None:
         open_browser = (lambda url: False) if args.no_browser else webbrowser.open

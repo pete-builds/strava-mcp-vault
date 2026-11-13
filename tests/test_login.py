@@ -823,7 +823,15 @@ def test_only_get_is_accepted_on_callback(token_endpoint, vault_env):
 
 
 @pytest.mark.parametrize(
-    "host", ["evil.example:{port}", None, "localhost:1", "localhost:{port}\r\nHost: x"]
+    "host",
+    [
+        "evil.example:{port}",
+        None,
+        "localhost:1",
+        "localhost:{port}\r\nHost: x",
+        "localhost:{port}0",
+        "xlocalhost:{port}",
+    ],
 )
 def test_callback_needs_a_loopback_host_header(token_endpoint, vault_env, host):
     """A page on another name that resolves to 127.0.0.1 (DNS rebinding) sends
@@ -835,6 +843,82 @@ def test_callback_needs_a_loopback_host_header(token_endpoint, vault_env, host):
     assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
     assert browser.join() == ["HTTP/1.1 404 Not Found", "HTTP/1.1 200 OK"]
     assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_host_mismatch_is_said_in_terminal_capped_and_not_a_refusal(
+    token_endpoint, vault_env, capsys
+):
+    """A /callback rejected only for its Host says so (a real browser rejected
+    this way would otherwise see "Not found" and then a timeout), at most
+    MAX_HOST_NOTICES times, without echoing the Host, and without counting
+    toward MAX_REFUSALS."""
+    count = login.MAX_REFUSALS + 2
+    wrong_host = [
+        lambda port, state: _raw_get(port, _callback_target(state, code="h"), host="evil.example")
+    ] * count
+    browser = _Script(*wrong_host, _real_redirect)
+    assert _run_main(["--timeout", "8"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found"] * count + ["HTTP/1.1 200 OK"]
+    out = capsys.readouterr().out
+    assert out.count(login.HOST_LINE) == login.MAX_HOST_NOTICES
+    assert login.REFUSAL_LINE not in out
+    assert "evil.example" not in out
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_allowed_hosts_include_bare_names_only_on_port_80():
+    """Browsers drop ":80" from the Host header."""
+    assert login._allowed_hosts(80) == {"localhost:80", "127.0.0.1:80", "localhost", "127.0.0.1"}
+    assert login._allowed_hosts(8080) == {"localhost:8080", "127.0.0.1:8080"}
+
+
+def test_host_line_after_the_headers_is_not_a_header(token_endpoint, vault_env):
+    """A request with no Host header, and "Host: ..." in its body, is a 404."""
+
+    def host_in_body(port, state):
+        raw = (
+            f"GET {_callback_target(state, code='body')} HTTP/1.1\r\n\r\n"
+            f"Host: localhost:{port}\r\n\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.sendall(raw)
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        return data.split(b"\r\n", 1)[0].decode()
+
+    browser = _Script(host_in_body, _real_redirect)
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_refusals_do_not_extend_the_deadline(token_endpoint, vault_env, capsys):
+    def late_refusal(port, state):
+        time.sleep(1.0)
+        return _raw_get(port, _q(("state", "late"), ("code", "c")))
+
+    browser = _Script(late_refusal)
+    started = time.monotonic()
+    assert _run_main(["--timeout", "1.5"], token_endpoint, browser) == 1
+    assert time.monotonic() - started < 2.3  # the original deadline, not later
+    assert browser.join() == ["HTTP/1.1 400 Bad Request"]
+    assert "Timed out" in capsys.readouterr().err
+
+
+def test_a_404_does_not_reset_the_refusal_count(token_endpoint, vault_env, capsys):
+    refusal = lambda port, state: _raw_get(port, _q(("state", "x"), ("code", "c")))  # noqa: E731
+    stray = lambda port, state: _raw_get(port, "/favicon.ico")  # noqa: E731
+    steps = [refusal] * (login.MAX_REFUSALS - 1) + [stray, refusal]
+    browser = _Script(*steps)
+    started = time.monotonic()
+    assert _run_main(["--timeout", "6"], token_endpoint, browser) == 1
+    assert time.monotonic() - started < 4
+    assert "Another program or web page on this computer" in capsys.readouterr().err
+    assert token_endpoint.requests == []
 
 
 def test_127_0_0_1_host_is_served(token_endpoint, vault_env):
@@ -1220,7 +1304,7 @@ def test_bad_arguments_rejected(token_endpoint):
     assert _run_main(["--timeout", "0"], token_endpoint, _FakeBrowser()) == 2
 
 
-@pytest.mark.parametrize("value", ["inf", "nan", "-inf"])
+@pytest.mark.parametrize("value", ["inf", "nan", "-inf", "1e300", "3601"])
 def test_non_finite_timeout_rejected(token_endpoint, vault_env, value):
     opened = []
 
