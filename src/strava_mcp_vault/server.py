@@ -421,8 +421,8 @@ async def set_ride_spot(
     not the coordinate of a ride start. The pin published for a spot is this
     coordinate, and no recorded GPS start point is ever exported.
 
-    Stored in its own table, so sync_activities cannot wipe it the way it wipes
-    set_activity_location overrides. Returns a confirmation line.
+    Stored in its own table, separate from set_activity_location overrides (which
+    also survive sync_activities). Returns a confirmation line.
 
     Args:
         name: Display name for the spot (e.g. "Shindagin Hollow").
