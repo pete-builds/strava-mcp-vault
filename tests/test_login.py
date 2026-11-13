@@ -1348,3 +1348,18 @@ def test_stdlib_smoke_script_passes():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "all checks passed" in result.stdout
+
+
+def test_sign_in_records_the_scope_it_verified(token_endpoint, vault_env):
+    """repair_vault(delete_gone=true) needs to know the token can see private rides."""
+    assert _run_main([], token_endpoint, _FakeBrowser()) == 0
+
+    async def go():
+        db = CacheDB(str(vault_env))
+        await db.init()
+        try:
+            return await db.get_meta("token_scope")
+        finally:
+            await db.close()
+
+    assert asyncio.run(go()) == "activity:read_all"

@@ -38,6 +38,8 @@ REMOTE = {
     "get_athlete_profile",
     "get_athlete_stats",
     "sync_activities",
+    "check_vault",
+    "repair_vault",
 }
 WRITES = {
     "set_activity_location",
@@ -45,6 +47,7 @@ WRITES = {
     "sync_activities",
     "sync_route_tracks",
     "set_ride_spot",
+    "repair_vault",
 }
 
 
@@ -74,13 +77,19 @@ def test_every_tool_is_annotated(tools):
     assert sorted(n for n, t in tools.items() if t.annotations is None) == []
 
 
-def test_the_expected_seventeen_are_present(tools):
+def test_the_expected_tools_are_present(tools):
     """Guards the guard: an empty manifest would pass everything below."""
     assert set(tools) == LOCAL | REMOTE
 
 
 def test_the_delete_is_marked_destructive(tools):
     assert hint(tools["delete_vault_activity"], "destructiveHint") is True
+
+
+def test_the_check_is_read_only_and_the_repair_is_not(tools):
+    """check_vault writes nothing; repair_vault can delete with delete_gone."""
+    assert hint(tools["check_vault"], "readOnlyHint") is True
+    assert hint(tools["repair_vault"], "destructiveHint") is True
 
 
 def test_writes_are_never_marked_read_only(tools):

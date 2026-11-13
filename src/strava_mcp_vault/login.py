@@ -514,6 +514,7 @@ async def _write_db(db_path: str, tokens: dict) -> None:
     await db.init()
     try:
         await db.set_tokens(tokens["access_token"], tokens["refresh_token"], tokens["expires_at"])
+        await db.set_meta("token_scope", REQUIRED_SCOPE)  # _check_callback refused without it
     finally:
         await db.close()
 

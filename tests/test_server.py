@@ -169,3 +169,51 @@ async def test_set_activity_location_not_found(mock_manager):
     mock_manager.db.set_location_override.return_value = False
     result = await set_activity_location(activity_id=999)
     assert "not found" in result
+
+
+# ── Unknown arguments are refused on the strict tools ──────────────────
+# The SDK drops an argument a tool does not declare, so sync_activities(mode=
+# "full") did nothing and printed "Sync Complete". The strict tools refuse.
+
+
+@pytest.mark.parametrize(
+    ("tool", "bogus", "valid"),
+    [
+        ("sync_activities", {"mode": "full"}, "days_back"),
+        ("check_vault", {"start": "2026-01-01"}, "after, before, sport_types"),
+        ("repair_vault", {"delete": True}, "after, before, delete_gone, max_delete, sport_types"),
+        ("get_cache_stats", {"verbose": True}, "no arguments"),
+    ],
+)
+async def test_an_unknown_argument_is_an_error_naming_the_valid_ones(
+    mock_manager, tool, bogus, valid
+):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from strava_mcp_vault.server import mcp
+
+    with pytest.raises(ToolError) as exc_info:
+        await mcp.call_tool(tool, bogus)
+    message = str(exc_info.value)
+    assert f"does not take {next(iter(bogus))}" in message
+    assert f"accepts: {valid}" in message
+    assert mock_manager.method_calls == []  # nothing ran
+
+
+async def test_the_strict_tools_still_take_their_real_arguments(mock_manager):
+    from strava_mcp_vault.server import STRICT_TOOLS, mcp
+
+    mock_manager.sync_activities.return_value = {"mode": "window_3d"}
+    await mcp.call_tool("sync_activities", {"days_back": 3})
+    mock_manager.sync_activities.assert_awaited_once_with(3)
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in STRICT_TOOLS:
+        assert tools[name].input_schema["additionalProperties"] is False
+
+
+async def test_check_vault_tool_reports_a_bad_date_plainly(mock_manager):
+    from strava_mcp_vault.server import check_vault
+
+    mock_manager.check_vault.side_effect = ValueError('after="May" is not an ISO date.')
+    assert (await check_vault(after="May")).startswith("Error: after=")

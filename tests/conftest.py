@@ -1,6 +1,6 @@
 """Shared test fixtures for strava-mcp-vault."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,6 +49,9 @@ def mock_strava_client():
         "short": {"usage": 10, "limit": 100},
         "long": {"usage": 200, "limit": 1000},
     }
+    # Plain (not async) methods on the real client; None means "not reported yet".
+    client.read_budget_remaining = MagicMock(return_value=None)
+    client.read_budget_reset_text = MagicMock(return_value="")
     return client
 
 

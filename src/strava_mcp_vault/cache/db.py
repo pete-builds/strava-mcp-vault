@@ -101,6 +101,30 @@ class CacheDB:
                 blurb TEXT,
                 created_at REAL NOT NULL
             );
+
+            -- One row per sync or repair, never updated or pruned, so a hole
+            -- can be dated afterwards. sync_log above keeps only the last run.
+            -- Additive: an older vault gains this table on its next start.
+            CREATE TABLE IF NOT EXISTS sync_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at REAL NOT NULL,
+                finished_at REAL,
+                mode TEXT NOT NULL,
+                window_after TEXT,
+                window_before TEXT,
+                added INTEGER NOT NULL DEFAULT 0,
+                updated INTEGER NOT NULL DEFAULT 0,
+                removed INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                note TEXT
+            );
+
+            -- Small facts about the vault itself, such as which Strava athlete
+            -- it belongs to, recorded on first use. Additive, like sync_history.
+            CREATE TABLE IF NOT EXISTS vault_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -598,6 +622,178 @@ class CacheDB:
         )
         await self._db.commit()
         return cursor.rowcount
+
+    async def get_vault_index(
+        self,
+        after: str | None = None,
+        before: str | None = None,
+        sport_types: list[str] | None = None,
+    ) -> list[dict]:
+        """The light per-activity facts a vault check compares, for a window.
+
+        Filters on start_date_local exactly as query_vault does, so a check
+        and a query over the same dates count the same activities.
+        """
+        conditions = []
+        params: list = []
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+        if sport_types:
+            # Case-insensitive, so "ride" means Ride rather than matching nothing.
+            conditions.append(f"LOWER(sport_type) IN ({','.join('?' for _ in sport_types)})")
+            params.extend(t.lower() for t in sport_types)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            "SELECT id, start_date_local, sport_type, json_extract(data, '$.distance'), "
+            "json_extract(data, '$.name'), location_override, "
+            "COALESCE(json_extract(data, '$.private'), 0) "
+            "OR COALESCE(json_extract(data, '$.visibility'), '') = 'only_me' "
+            f"FROM activities {where} ORDER BY start_date_local",
+            params,
+        )
+        return [
+            {
+                "id": row[0],
+                "start_date_local": row[1],
+                "sport_type": row[2],
+                "distance": row[3] or 0,
+                "name": row[4],
+                "location_override": row[5],
+                "private": bool(row[6]),
+            }
+            for row in await cursor.fetchall()
+        ]
+
+    async def get_vault_athlete_ids(self) -> set[int]:
+        """The Strava athlete ids carried on the vault's stored activities."""
+        cursor = await self._db.execute(
+            "SELECT DISTINCT CAST(json_extract(data, '$.athlete.id') AS INTEGER) "
+            "FROM activities WHERE json_extract(data, '$.athlete.id') IS NOT NULL"
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
+    async def get_meta(self, key: str) -> str | None:
+        cursor = await self._db.execute("SELECT value FROM vault_meta WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def set_meta(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO vault_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self._db.commit()
+
+    async def get_existing_ids(self, activity_ids: list[int]) -> set[int]:
+        """Which of these ids the vault already holds."""
+        found: set[int] = set()
+        ids = list(activity_ids)
+        for start in range(0, len(ids), 500):  # stay under SQLite's variable limit
+            chunk = ids[start : start + 500]
+            cursor = await self._db.execute(
+                f"SELECT id FROM activities WHERE id IN ({','.join('?' for _ in chunk)})",
+                chunk,
+            )
+            found.update(row[0] for row in await cursor.fetchall())
+        return found
+
+    async def delete_activities_reporting(self, activity_ids: list[int]) -> list[dict]:
+        """Delete activities in ONE transaction and return exactly what went.
+
+        Each returned dict names the id, date, type, name and any hand-set
+        location the row carried, read inside the same transaction as the
+        delete, so the report cannot drift from what was removed.
+        """
+        if not activity_ids:
+            return []
+        placeholders = ",".join("?" for _ in activity_ids)
+        try:
+            await self._db.execute("BEGIN IMMEDIATE")
+            cursor = await self._db.execute(
+                "SELECT id, start_date_local, sport_type, json_extract(data, '$.name'), "
+                f"location_override FROM activities WHERE id IN ({placeholders}) "
+                "ORDER BY start_date_local",
+                list(activity_ids),
+            )
+            rows = await cursor.fetchall()
+            await self._db.execute(
+                f"DELETE FROM activities WHERE id IN ({placeholders})", list(activity_ids)
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+        return [
+            {
+                "id": r[0],
+                "start_date_local": r[1],
+                "sport_type": r[2],
+                "name": r[3],
+                "location_override": r[4],
+            }
+            for r in rows
+        ]
+
+    async def add_sync_history(
+        self,
+        started_at: float,
+        mode: str,
+        window_after: str | None,
+        window_before: str | None,
+        added: int,
+        updated: int,
+        completed: bool,
+        removed: int = 0,
+        note: str | None = None,
+    ) -> None:
+        """Append one row to the sync history. Rows are never updated."""
+        await self._db.execute(
+            "INSERT INTO sync_history (started_at, finished_at, mode, window_after, "
+            "window_before, added, updated, removed, completed, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                started_at,
+                time.time(),
+                mode,
+                window_after,
+                window_before,
+                added,
+                updated,
+                removed,
+                1 if completed else 0,
+                note,
+            ),
+        )
+        await self._db.commit()
+
+    async def get_sync_history(self, limit: int = 10) -> list[dict]:
+        """The most recent sync history rows, newest first."""
+        cursor = await self._db.execute(
+            "SELECT started_at, finished_at, mode, window_after, window_before, added, "
+            "updated, removed, completed, note FROM sync_history ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        keys = (
+            "started_at",
+            "finished_at",
+            "mode",
+            "window_after",
+            "window_before",
+            "added",
+            "updated",
+            "removed",
+            "completed",
+            "note",
+        )
+        return [
+            {**dict(zip(keys, row, strict=True)), "completed": bool(row[8])}
+            for row in await cursor.fetchall()
+        ]
 
     async def update_sync_log(self, total_synced: int, mode: str):
         """Record sync completion."""

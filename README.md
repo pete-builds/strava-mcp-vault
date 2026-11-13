@@ -47,8 +47,10 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 | `get_activity_streams` | Time-series data (heart rate, elevation, GPS) | 7 days |
 | `get_athlete_profile` | Authenticated athlete info | 24 hours |
 | `get_athlete_stats` | YTD and all-time totals | 1 day |
-| `get_cache_stats` | Cache hit/miss rates and API rate limit status | none |
+| `get_cache_stats` | Cache hit/miss rates, API rate limits (general and read), recent syncs | none |
 | `sync_activities` | Bulk-sync recent activities into cache | varies |
+| `check_vault` | Compare the vault with Strava: what is missing, what is gone, by month | none |
+| `repair_vault` | Add what `check_vault` found missing; delete only with `delete_gone=true` | none |
 | `query_vault` | Filter and aggregate cached activities by date, sport type | none |
 | `get_activities_near` | Vault activities that started near a place name | none |
 | `set_activity_location` | Hand-label an indoor or GPS-less activity | none |
@@ -332,6 +334,63 @@ Each data type has its own TTL, tuned to how often the underlying data changes:
 Run `sync_activities` after first setup to pull your recent history into the cache. This makes subsequent queries fast and avoids burning API calls on data you've already fetched.
 
 Cached data persists across container restarts through a Docker volume (`strava-data`). Use `get_cache_stats` to check hit/miss rates and see how much of your API budget remains.
+
+## Is my vault complete?
+
+A routine sync only asks Strava for activities newer than the newest one already
+stored, so it can never fill a gap behind that point, and it reports success
+either way. Rides deleted on Strava also stay in the vault. To find out, ask:
+
+```
+check_vault(after="2026-01-01", sport_types="Ride,MountainBikeRide,GravelRide")
+```
+
+It reads Strava's activity list for that window (about one call per 200
+activities), changes nothing, and reports each side's count and distance, a
+per-month table, every activity on Strava that the vault lacks, every activity
+re-dated or re-typed on Strava, and every vault activity missing from Strava's
+list. It says the vault matches only when the counts agree and the distances
+agree within a metre. Leave out `after` and `before` to check the whole account.
+
+To fix what it found, run `repair_vault` with the same arguments. It stores the
+activities through the same update a sync uses, so a location you set with
+`set_activity_location` is kept. If Strava answers for a different athlete than
+the vault belongs to (a token from another account), it stores and deletes
+nothing.
+
+Activities missing from Strava's list are kept. A ride can be absent from the
+list because the token cannot see it or because Strava's answer was incomplete,
+so `delete_gone=true` deletes one only when all of these hold: the vault knows
+its token holds `activity:read_all` (recorded when `strava-mcp-vault-login`
+writes to the vault; a token seeded from environment variables, including the
+`--env-file` Docker setup, has no record, so deletes are refused), the vault's
+stored activities name its Strava athlete, the whole window was read, Strava's side of it is not empty, the number to delete is at most 10
+or 5 percent of the window (whichever is larger; `max_delete` changes that for
+one run), the ride was not stored as private, and Strava answers 404 when asked
+for that ride by id. Anything else keeps the ride and the report says why. The
+report always shows the delete limit that applied, and `max_delete` is only
+accepted together with `delete_gone`. Sport names are matched without regard to
+case, and a window where both sides have nothing says so instead of "matches".
+
+**Back up the vault before using `delete_gone`.** With the shipped
+`docker-compose.yml` and the default `VAULT_DB_PATH`, this writes a consistent
+copy next to the vault on the `strava-data` volume (SQLite's own backup, which
+includes the WAL; do not `docker cp` the live file):
+
+```bash
+docker exec strava-mcp-vault python -c "import sqlite3; sqlite3.connect('/app/data/vault.db').backup(sqlite3.connect('/app/data/vault-backup.db'))"
+```
+
+If you run it some other way, back up the vault file first.
+
+Strava allows 100 read calls per 15 minutes and 1,000 a day. The check stops
+while 5 are still left, says how far it got, and prints the exact call to
+continue once the limit resets. `get_cache_stats` shows the read budget and the
+last ten syncs, including any that did not finish, so a hole can be dated.
+
+From Python (for a nightly job), the same logic is
+`await CacheManager(db, client).check_vault(after="2026-01-01")`, which returns
+the report as a dict.
 
 ## Development
 

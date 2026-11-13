@@ -13,6 +13,13 @@ class RateLimitError(VaultError):
     """Strava API rate limit exceeded."""
 
 
+class ReadBudgetExhausted(RateLimitError):
+    """Refused locally: the call would exceed Strava's remaining read budget.
+
+    Raised before anything is sent, so it costs nothing against the limit.
+    """
+
+
 class StravaAPIError(VaultError):
     """Strava API returned a non-success response."""
 
