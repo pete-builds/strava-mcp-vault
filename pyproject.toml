@@ -47,6 +47,7 @@ dev = [
 [project.scripts]
 strava-mcp-vault = "strava_mcp_vault.server:main"
 strava-mcp-vault-healthcheck = "strava_mcp_vault.healthcheck:main"
+strava-mcp-vault-login = "strava_mcp_vault.login:main"
 
 [project.urls]
 Homepage = "https://github.com/pete-builds/strava-mcp-vault"

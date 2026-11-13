@@ -47,6 +47,18 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  login-python39:
+    # The README tells Docker users to run src/strava_mcp_vault/login.py
+    # straight from a clone on whatever python3 they have, and macOS still
+    # ships 3.9. GitHub's hosted Python builds cannot be relied on for an
+    # end-of-life version, so this runs in the official python:3.9-slim image.
+    # Standard library only: no pip install, which is the point.
+    runs-on: ubuntu-latest
+    container: python:3.9-slim
+    steps:
+      - uses: actions/checkout@v7
+      - run: python -I tests/stdlib_smoke.py
+
   packaging:
     runs-on: ubuntu-latest
     steps:
@@ -69,6 +81,7 @@ jobs:
           /tmp/verify/bin/python -c "import strava_mcp_vault; print(strava_mcp_vault.__version__)"
           test -x /tmp/verify/bin/strava-mcp-vault
           test -x /tmp/verify/bin/strava-mcp-vault-healthcheck
+          test -x /tmp/verify/bin/strava-mcp-vault-login
 
   docker-build:
     runs-on: ubuntu-latest
