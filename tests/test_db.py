@@ -179,6 +179,41 @@ async def test_set_location_override_not_found(tmp_db):
     assert found is False
 
 
+async def _override_of(db, activity_id):
+    cursor = await db._db.execute(
+        "SELECT location_override FROM activities WHERE id = ?", (activity_id,)
+    )
+    row = await cursor.fetchone()
+    return row[0]
+
+
+async def test_upsert_activity_keeps_location_override(tmp_db, sample_activity):
+    """Re-storing an activity must refresh its data and leave a hand-set location alone."""
+    await tmp_db.upsert_activity(sample_activity)
+    await tmp_db.set_location_override(sample_activity["id"], "Ithaca, NY")
+
+    await tmp_db.upsert_activity({**sample_activity, "name": "Renamed on Strava"})
+
+    assert await _override_of(tmp_db, sample_activity["id"]) == "Ithaca, NY"
+    stored = await tmp_db.get_activity_row(sample_activity["id"])
+    assert stored["name"] == "Renamed on Strava"
+
+
+async def test_upsert_activities_batch_keeps_location_override(tmp_db, sample_activities_batch):
+    """The batch path sync uses must not wipe overrides either."""
+    await tmp_db.upsert_activities_batch(sample_activities_batch)
+    await tmp_db.set_location_override(100002, "Cass Park track")
+
+    renamed = [{**a, "name": f"{a['name']} (edited)"} for a in sample_activities_batch]
+    await tmp_db.upsert_activities_batch(renamed)
+
+    assert await _override_of(tmp_db, 100002) == "Cass Park track"
+    assert await _override_of(tmp_db, 100001) is None
+    stored = await tmp_db.get_activity_row(100002)
+    assert stored["name"] == "Evening Run (edited)"
+    assert await tmp_db.get_vault_activity_count() == len(sample_activities_batch)
+
+
 # ── Delete ─────────────────────────────────────────────────────────────
 
 

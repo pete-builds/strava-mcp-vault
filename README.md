@@ -86,8 +86,9 @@ guarantee is removed:
   privacy-zone trimming is not a substitute: it is applied inconsistently, and
   `start_latlng` is the raw recorded start regardless.
 
-Curated spots live in their own `ride_spots` table, so `sync_activities` cannot
-wipe them the way it wipes `set_activity_location` overrides.
+Curated spots live in their own `ride_spots` table, which `sync_activities`
+never writes. A re-sync also keeps any location set with
+`set_activity_location`; older versions wiped those.
 
 ### Route tracks, and why they are clipped
 
