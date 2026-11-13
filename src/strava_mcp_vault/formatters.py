@@ -11,7 +11,7 @@ Activity-type-specific formatting:
 - Swims: Distance, time, pace
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from strava_mcp_vault.tracks import normalize_streams
 
@@ -786,6 +786,20 @@ def format_cache_stats(stats: dict) -> str:
     else:
         lines.append("- **Last sync:** Never (run sync_activities to populate)")
 
+    history = vault.get("sync_history") or []
+    if history:
+        lines.append("\n#### Recent syncs (newest first)\n")
+        lines.append(
+            "| Started (UTC) | Mode | Window from | Added | Updated | Removed | Finished |"
+        )
+        lines.append("|---|---|---|---|---|---|---|")
+        for h in history:
+            started = datetime.fromtimestamp(h["started_at"], tz=UTC).strftime("%Y-%m-%d %H:%M")
+            lines.append(
+                f"| {started} | {h['mode']} | {h.get('window_after') or 'all'} | {h['added']} "
+                f"| {h['updated']} | {h['removed']} | {'yes' if h['completed'] else 'NO'} |"
+            )
+
     lines.append("")
 
     # Cache section
@@ -821,6 +835,15 @@ def format_cache_stats(stats: dict) -> str:
         lines.append(
             f"- **Daily window:** {long_.get('usage', '?')}/{long_.get('limit', '?')} requests"
         )
+        read = rate_limit.get("read")
+        if read:
+            rs, rl = read["short"], read["long"]
+            lines.append(
+                f"- **Read, 15-min window:** {rs['usage']}/{rs['limit']} (resets {rs['resets_at']})"
+            )
+            lines.append(
+                f"- **Read, daily window:** {rl['usage']}/{rl['limit']} (resets {rl['resets_at']})"
+            )
     else:
         lines.append("*Rate limit data not yet available (no API calls made this session).*")
 
@@ -940,6 +963,136 @@ def format_activities_near(
             f"| {date} | {icon} {sport} | {dist_mi:.1f} mi | {time_str} | {location} | {near} mi | {name} |"
         )
 
+    return "\n".join(lines)
+
+
+_LIST_LIMIT = 25
+
+
+def _count(n: int) -> str:
+    return f"{n} activity" if n == 1 else f"{n} activities"
+
+
+def _miles(meters: float) -> str:
+    return f"{(meters or 0) / METERS_PER_MILE:,.1f} mi"
+
+
+def _activity_line(a: dict) -> str:
+    date = (a.get("start_date_local") or "")[:10]
+    name = a.get("name") or "(no name)"
+    line = f'- {date} {a.get("sport_type") or "?"} "{name}" (id {a["id"]})'
+    if "distance" in a:
+        line += f", {_miles(a['distance'])}"
+    if a.get("location_override"):
+        line += f", has a hand-set location ({a['location_override']})"
+    return line
+
+
+def _call_args(args: dict) -> str:
+    return ", ".join(f'{k}="{v}"' for k, v in args.items() if v)
+
+
+def format_vault_check(report: dict) -> str:
+    """Format a check_vault or repair_vault report as markdown."""
+    window = report["window"]
+    types = window.get("sport_types") or []
+    span = f"{window.get('after') or 'the beginning'} to {window.get('before') or 'now'}"
+    repair = report.get("repair")
+    title = "Vault repair" if repair else "Vault check"
+    lines = [f"## {title}: {span}" + (f", {', '.join(types)}" if types else "") + "\n"]
+
+    missing, gone = report["missing"], report["gone"]
+    if not report["complete"]:
+        lines.append(
+            f"**Stopped early:** {report['stop_reason']}. "
+            f"Strava was checked through {report.get('checked_through') or 'nothing yet'}; "
+            "the numbers below cover only that stretch.\n"
+        )
+    elif not missing and not gone:
+        lines.append("**Result:** the vault matches Strava for this window.\n")
+    else:
+        parts = []
+        if missing:
+            parts.append(f"{_count(len(missing))} on Strava missing from the vault")
+        if gone:
+            parts.append(f"{_count(len(gone))} in the vault but gone from Strava")
+        lines.append(f"**Result:** {'; '.join(parts)}.\n")
+
+    s, v = report["strava"], report["vault"]
+    lines.append("| | Strava | Vault |")
+    lines.append("|---|---|---|")
+    lines.append(f"| Activities | {s['count']} | {v['count']} |")
+    lines.append(f"| Distance | {_miles(s['distance_meters'])} | {_miles(v['distance_meters'])} |")
+    lines.append("")
+    if repair:
+        after = repair["vault_after"]
+        lines.append(
+            f"**Vault after repair:** {_count(after['count'])}, "
+            f"{_miles(after['distance_meters'])}\n"
+        )
+
+    if report["months"]:
+        lines.append("### By month\n")
+        lines.append("| Month | Strava | Vault | Missing | Gone from Strava |")
+        lines.append("|---|---|---|---|---|")
+        for m in report["months"]:
+            gone_cell = m["gone"] if gone is not None else "not checked"
+            lines.append(
+                f"| {m['month'] or '?'} | {m['strava']} | {m['vault']} | {m['missing']} "
+                f"| {gone_cell} |"
+            )
+        lines.append("")
+
+    if missing:
+        lines.append(f"### Missing from the vault ({len(missing)})\n")
+        lines.extend(_activity_line(a) for a in missing[:_LIST_LIMIT])
+        if len(missing) > _LIST_LIMIT:
+            lines.append(f"- ...and {len(missing) - _LIST_LIMIT} more")
+        lines.append("")
+
+    if gone is None:
+        lines.append(
+            "### Gone from Strava\n\nNot checked: that needs the whole window read from "
+            "Strava, and this run stopped early.\n"
+        )
+    elif gone:
+        lines.append(f"### In the vault but gone from Strava ({len(gone)})\n")
+        lines.extend(_activity_line(r) for r in gone[:_LIST_LIMIT])
+        if len(gone) > _LIST_LIMIT:
+            lines.append(f"- ...and {len(gone) - _LIST_LIMIT} more")
+        lines.append("")
+
+    if repair:
+        lines.append("### What the repair did\n")
+        lines.append(f"- **Added:** {len(repair['added'])}")
+        lines.append(f"- **Refreshed (hand-set locations kept):** {repair['updated']}")
+        if repair["removed"]:
+            lines.append(f"- **Removed ({len(repair['removed'])}):**")
+            lines.extend("  " + _activity_line(r) for r in repair["removed"])
+        elif repair.get("delete_note"):
+            lines.append(f"- **Removed:** none. {repair['delete_note']}")
+        elif gone:
+            lines.append(
+                "- **Removed:** none. Activities gone from Strava are kept unless you "
+                "pass delete_gone=true."
+            )
+        lines.append("")
+
+    lines.append(f"Strava read calls used: {report['api_calls']}.")
+    resume = report.get("resume")
+    if resume is not None:
+        args = _call_args({**resume, "sport_types": ",".join(types)})
+        tool = "repair_vault" if repair else "check_vault"
+        lines.append(f"To continue, run {tool}({args}) once the read limit resets.")
+    elif missing and not repair:
+        args = _call_args(
+            {
+                "after": window.get("after"),
+                "before": window.get("before"),
+                "sport_types": ",".join(types),
+            }
+        )
+        lines.append(f"To add the missing activities, run repair_vault({args}).")
     return "\n".join(lines)
 
 

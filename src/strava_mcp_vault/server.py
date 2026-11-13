@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from mcp.server import MCPServer
+from pydantic import ConfigDict, model_validator
 
 from strava_mcp_vault.cache.db import CacheDB
 from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
@@ -23,6 +24,7 @@ from strava_mcp_vault.formatters import (
     format_recent_activities,
     format_recent_activities_compact,
     format_sync_result,
+    format_vault_check,
     format_vault_query,
 )
 from strava_mcp_vault.photos import pick_for_spot, strip_photo
@@ -690,6 +692,89 @@ async def sync_route_tracks(limit: int = 80) -> str:
         return f"Unexpected error: {type(e).__name__}: {e}"
 
 
+@mcp.tool(annotations=READ_REMOTE)
+async def check_vault(
+    after: str | None = None,
+    before: str | None = None,
+    sport_types: str | None = None,
+) -> str:
+    """Check whether the vault holds everything Strava does. Changes nothing.
+
+    sync_activities only fetches activities newer than the newest one stored,
+    so a gap behind that point is never filled and every sync still reports
+    success. This reads Strava's activity list for the window (about one call
+    per 200 activities) and reports: activities on Strava but missing from the
+    vault, grouped by month; activities in the vault but gone from Strava;
+    per-month counts for both sides; and each side's count and distance.
+
+    It stops before Strava's read limit runs out and says how far it got and
+    exactly what to run to continue. Fix what it finds with repair_vault.
+
+    Args:
+        after: Only activities on or after this local date (ISO, e.g. "2026-01-01").
+        before: Only activities before this local date (ISO, e.g. "2027-01-01").
+        sport_types: Comma-separated types to compare (e.g. "Ride,MountainBikeRide,GravelRide"). Default all.
+    """
+    try:
+        report = await manager.check_vault(after=after, before=before, sport_types=sport_types)
+        return format_vault_check(report)
+    except ValueError as e:
+        return f"Error: {e}"
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in check_vault")
+        return f"Unexpected error: {type(e).__name__}: {e}"
+
+
+#: Fills gaps, and with delete_gone=true removes activities deleted on Strava.
+REPAIR = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+
+@mcp.tool(annotations=REPAIR)
+async def repair_vault(
+    after: str | None = None,
+    before: str | None = None,
+    sport_types: str | None = None,
+    delete_gone: bool = False,
+) -> str:
+    """Run check_vault, then add what the vault is missing.
+
+    Every Strava activity in the window is stored through the same update sync
+    uses, so missing ones are added and the rest refreshed, and a location set
+    with set_activity_location is kept. No extra Strava calls beyond the check.
+
+    Activities in the vault but gone from Strava are only listed. They are
+    deleted only with delete_gone=true, and only when the check read the whole
+    window; they go in one transaction and the report names each one. If the
+    read limit cuts a repair short, what was fetched is kept, the vault stays
+    consistent, and the report says what to run to continue.
+
+    Args:
+        after: Only activities on or after this local date (ISO, e.g. "2026-05-01").
+        before: Only activities before this local date (ISO, e.g. "2026-07-01").
+        sport_types: Comma-separated types to repair (e.g. "Ride,GravelRide"). Default all.
+        delete_gone: Also delete vault activities that no longer exist on Strava. Default false.
+    """
+    try:
+        report = await manager.repair_vault(
+            after=after, before=before, sport_types=sport_types, delete_gone=delete_gone
+        )
+        return format_vault_check(report)
+    except ValueError as e:
+        return f"Error: {e}"
+    except VaultError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception("Unexpected error in repair_vault")
+        return f"Unexpected error: {type(e).__name__}: {e}"
+
+
 @mcp.tool(annotations=SYNC)
 async def sync_activities(days_back: int = 0) -> str:
     """Sync Strava activities into the local vault.
@@ -713,6 +798,45 @@ async def sync_activities(days_back: int = 0) -> str:
     except Exception as e:
         logger.exception("Unexpected error in sync_activities")
         return f"Unexpected error: {type(e).__name__}: {e}"
+
+
+def _strict_arguments(tool_name: str) -> None:
+    """Make a tool reject an argument it does not declare, naming the ones it does.
+
+    By default the MCP SDK drops unknown arguments without a word, so
+    sync_activities(mode="full") did nothing and still printed "Sync Complete".
+    This swaps the tool's argument model for one that refuses extras, and marks
+    the published schema the same way so a client can see it up front.
+    """
+    tool = mcp._tool_manager.get_tool(tool_name)
+    base = tool.fn_metadata.arg_model
+    valid = sorted(field.alias or name for name, field in base.model_fields.items())
+    accepts = ", ".join(valid) if valid else "no arguments"
+
+    class Strict(base):
+        model_config = ConfigDict(**base.model_config, extra="forbid")
+
+        @model_validator(mode="before")
+        @classmethod
+        def _reject_unknown(cls, data):
+            if isinstance(data, dict):
+                unknown = sorted(k for k in data if k not in valid)
+                if unknown:
+                    raise ValueError(
+                        f"{tool_name} does not take {', '.join(unknown)}. It accepts: {accepts}."
+                    )
+            return data
+
+    Strict.__name__ = base.__name__
+    tool.fn_metadata.arg_model = Strict
+    tool.parameters["additionalProperties"] = False
+
+
+#: Tools that refuse unknown arguments. The others still drop them silently;
+#: widening this list is a follow-up, kept out of this change on purpose.
+STRICT_TOOLS = ("check_vault", "repair_vault", "sync_activities", "get_cache_stats")
+for _name in STRICT_TOOLS:
+    _strict_arguments(_name)
 
 
 def build_app():

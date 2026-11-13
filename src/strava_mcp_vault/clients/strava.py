@@ -1,13 +1,34 @@
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 
 import httpx
 
 from strava_mcp_vault.clients.base import BaseClient
-from strava_mcp_vault.exceptions import RateLimitError, StravaAPIError
+from strava_mcp_vault.exceptions import RateLimitError, ReadBudgetExhausted, StravaAPIError
 
 logger = logging.getLogger(__name__)
+
+# Strava's windows: the 15-minute one resets at :00, :15, :30 and :45, the
+# daily one at midnight UTC (developers.strava.com/docs/rate-limits).
+_SHORT_WINDOW_SECONDS = 900
+_DAY_SECONDS = 86400
+
+
+def _parse_pair(value: str | None) -> tuple[int, int] | None:
+    """Parse a "15min,daily" header value such as "42,310"."""
+    if not value:
+        return None
+    try:
+        short, long_ = value.split(",")[:2]
+        return int(short), int(long_)
+    except ValueError:
+        return None
+
+
+def _utc_hhmm(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M UTC")
 
 
 def _describe_error_body(response: httpx.Response) -> str:
@@ -66,6 +87,11 @@ class StravaClient(BaseClient):
         self._expires_at: int = 0
         self._rate_limit_usage: str | None = None  # "usage,limit" from header
         self._rate_limit_limit: str | None = None
+        # Strava's separate, smaller READ budget, and when it was last reported.
+        self._read_usage: tuple[int, int] | None = None
+        self._read_limit: tuple[int, int] | None = None
+        self._read_seen_at: float = 0.0
+        self._now = time.time  # swapped in tests to move the clock
 
     async def init_tokens(self):
         """Load tokens from cache_db.
@@ -133,6 +159,7 @@ class StravaClient(BaseClient):
         Retries once on transient connection errors (same pattern as
         BaseClient).
         """
+        self._check_read_budget()
         await self._ensure_valid_token()
 
         url = f"{self.base_url}{path}"
@@ -150,10 +177,17 @@ class StravaClient(BaseClient):
                     self._rate_limit_usage = usage
                 if limit:
                     self._rate_limit_limit = limit
+                read_usage = _parse_pair(resp.headers.get("X-ReadRateLimit-Usage"))
+                read_limit = _parse_pair(resp.headers.get("X-ReadRateLimit-Limit"))
+                if read_usage and read_limit:
+                    self._read_usage, self._read_limit = read_usage, read_limit
+                    self._read_seen_at = self._now()
 
                 if resp.status_code == 429:
                     raise RateLimitError(
-                        f"Strava rate limit exceeded (usage: {usage}, limit: {limit})"
+                        f"Strava rate limit exceeded (usage: {usage}, limit: {limit}, "
+                        f"read usage: {resp.headers.get('X-ReadRateLimit-Usage')}, "
+                        f"read limit: {resp.headers.get('X-ReadRateLimit-Limit')})"
                     )
 
                 resp.raise_for_status()
@@ -178,13 +212,18 @@ class StravaClient(BaseClient):
                 "short": {"usage": int, "limit": int},
                 "long":  {"usage": int, "limit": int},
             }
+
+        When Strava has reported its separate read budget, a "read" key holds
+        the same shape for it, with usage counted as zero once its window has
+        reset, and a "resets_at" time for each window.
         """
+        read = self.read_budget()
         if self._rate_limit_usage is None or self._rate_limit_limit is None:
-            return None
+            return {"read": read} if read else None
         try:
             usage_parts = self._rate_limit_usage.split(",")
             limit_parts = self._rate_limit_limit.split(",")
-            return {
+            result = {
                 "short": {
                     "usage": int(usage_parts[0]),
                     "limit": int(limit_parts[0]),
@@ -195,7 +234,74 @@ class StravaClient(BaseClient):
                 },
             }
         except (IndexError, ValueError):
+            return {"read": read} if read else None
+        if read:
+            result["read"] = read
+        return result
+
+    # ── Read budget ─────────────────────────────────────────────────────
+
+    def read_budget(self) -> dict | None:
+        """Strava's read budget as it stands now, or None if never reported.
+
+        Usage comes from the last response, so a window that has reset since
+        then counts as unused. Without that, one exhausted window would refuse
+        every later call forever, because only a call refreshes the headers.
+        """
+        if self._read_usage is None or self._read_limit is None:
             return None
+        now = self._now()
+        seen = self._read_seen_at
+        short_reset = (seen // _SHORT_WINDOW_SECONDS + 1) * _SHORT_WINDOW_SECONDS
+        long_reset = (seen // _DAY_SECONDS + 1) * _DAY_SECONDS
+        short_usage = self._read_usage[0] if now < short_reset else 0
+        long_usage = self._read_usage[1] if now < long_reset else 0
+        next_short = (now // _SHORT_WINDOW_SECONDS + 1) * _SHORT_WINDOW_SECONDS
+        next_long = (now // _DAY_SECONDS + 1) * _DAY_SECONDS
+        return {
+            "short": {
+                "usage": short_usage,
+                "limit": self._read_limit[0],
+                "resets_at": _utc_hhmm(next_short),
+            },
+            "long": {
+                "usage": long_usage,
+                "limit": self._read_limit[1],
+                "resets_at": _utc_hhmm(next_long),
+            },
+        }
+
+    def read_budget_remaining(self) -> int | None:
+        """Read calls left before either window runs out, or None if unknown."""
+        budget = self.read_budget()
+        if budget is None:
+            return None
+        return max(0, min(w["limit"] - w["usage"] for w in (budget["short"], budget["long"])))
+
+    def read_budget_reset_text(self) -> str:
+        """Say when the read budget comes back, for a message to the user."""
+        budget = self.read_budget()
+        if budget is None:
+            return ""
+        if budget["long"]["usage"] >= budget["long"]["limit"]:
+            return f"the daily read limit resets at {budget['long']['resets_at']}"
+        return f"the 15-minute read limit resets at {budget['short']['resets_at']}"
+
+    def _check_read_budget(self) -> None:
+        """Refuse a call the remaining read budget cannot cover.
+
+        Every request this client makes is a read, so each one needs one unit.
+        Refusing here sends nothing, where sending would earn a 429.
+        """
+        remaining = self.read_budget_remaining()
+        if remaining is not None and remaining < 1:
+            budget = self.read_budget()
+            raise ReadBudgetExhausted(
+                "Strava read budget used up "
+                f"(15-minute {budget['short']['usage']}/{budget['short']['limit']}, "
+                f"daily {budget['long']['usage']}/{budget['long']['limit']}); "
+                f"nothing was sent, and {self.read_budget_reset_text()}."
+            )
 
     # ── Strava API methods ──────────────────────────────────────────────
 
