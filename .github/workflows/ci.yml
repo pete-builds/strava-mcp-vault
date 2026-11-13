@@ -69,6 +69,7 @@ jobs:
           /tmp/verify/bin/python -c "import strava_mcp_vault; print(strava_mcp_vault.__version__)"
           test -x /tmp/verify/bin/strava-mcp-vault
           test -x /tmp/verify/bin/strava-mcp-vault-healthcheck
+          test -x /tmp/verify/bin/strava-mcp-vault-login
 
   docker-build:
     runs-on: ubuntu-latest
