@@ -13,6 +13,7 @@ Vault vs Cache:
 
 import logging
 import math
+import re
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -597,13 +598,14 @@ class CacheManager:
         """
         fetched, calls, stop_reason = await self._scan_strava(after, before)
         complete = stop_reason is None
+        wanted = {t.lower() for t in sport_types}  # "ride" means Ride
 
         def in_window(local: str | None, sport: str | None) -> bool:
             local = local or ""
             return (
                 (not after or local >= after)
                 and (not before or local < before)
-                and (not sport_types or sport in sport_types)
+                and (not wanted or (sport or "").lower() in wanted)
             )
 
         # On a stopped scan only the stretch Strava actually sent is compared.
@@ -694,8 +696,10 @@ class CacheManager:
             "count": len(vault_rows),
             "distance_meters": sum(r["distance"] for r in vault_rows),
         }
+        empty = strava_side["count"] == 0 and vault_side["count"] == 0
         matches = (
             complete
+            and not empty
             and not missing
             and not gone
             and not changed
@@ -711,7 +715,7 @@ class CacheManager:
             "checked_through": checked_through,
             "resume": resume,
             "api_calls": calls,
-            "athlete_warning": await self._athlete_mismatch(fetched, may_ask=False),
+            "empty": complete and empty,
             "strava": strava_side,
             "vault": vault_side,
             "months": [{"month": k, **v} for k, v in sorted(months.items())],
@@ -719,6 +723,9 @@ class CacheManager:
             "changed": changed,
             "gone": gone,
         }
+        report["athlete_warning"], report["athlete_unverified"] = await self._athlete_check(
+            fetched, may_ask=False
+        )
         # A repair refreshes every vault row Strava sent, not only the ones
         # still inside the filter, so a re-typed or re-dated ride is corrected.
         vault_ids = {r["id"] for r in vault_rows}
@@ -727,36 +734,47 @@ class CacheManager:
         ]
         return report, to_store, fetched
 
-    async def _athlete_mismatch(self, fetched: list[dict], *, may_ask: bool) -> str | None:
-        """Say why these activities may belong to someone else, or None.
+    async def _athlete_check(
+        self, fetched: list[dict], *, may_ask: bool
+    ) -> tuple[str | None, str | None]:
+        """Check the fetched activities belong to the vault's athlete.
 
-        The vault's athlete is the one on its stored rows, or, for a vault
-        whose rows do not carry one, the athlete recorded on first use. When
-        neither side names an athlete and may_ask is set, this asks Strava who
-        the token belongs to (one read call) and records it.
+        Returns (refusal, unverified): a reason to refuse repair, or a warning
+        that the athlete could not be checked at all. The vault's athlete is
+        the one on its stored rows or, for an EMPTY vault, the athlete recorded
+        on first use, learned from Strava (one read call, only when may_ask).
+        A vault whose rows carry no athlete id is never stamped from the token,
+        since the token is exactly what is in doubt.
         """
         if not fetched:
-            return None
+            return None, None
         expected = await self.db.get_vault_athlete_ids()
         if len(expected) > 1:
+            ids = ", ".join(str(i) for i in sorted(expected))
             return (
-                "the vault already holds activities from more than one Strava athlete "
-                f"({', '.join(str(i) for i in sorted(expected))})"
+                f"the vault already holds activities from more than one Strava athlete ({ids})",
+                None,
             )
         if not expected:
             stored = await self.db.get_meta("athlete_id")
             if stored:
                 expected = {int(stored)}
+            elif await self.db.get_vault_activity_count() > 0:
+                return None, (
+                    "the vault's stored activities do not say which Strava athlete they "
+                    "belong to, so the token could not be checked against them; no athlete "
+                    "was recorded, and nothing is deleted on a run like this"
+                )
         seen = {i for i in (_athlete_id(a) for a in fetched) if i is not None}
         if not seen or not expected:
             if not may_ask:
-                return None
+                return None, None
             try:
                 me = _int_or_none((await self.client.get_athlete()).get("id"))
             except VaultError as e:
-                return f"Strava could not confirm which athlete the token belongs to ({e})"
+                return f"Strava could not confirm which athlete the token belongs to ({e})", None
             if me is None:
-                return "Strava did not say which athlete the token belongs to"
+                return "Strava did not say which athlete the token belongs to", None
             seen.add(me)
             if not expected:
                 await self.db.set_meta("athlete_id", str(me))
@@ -766,8 +784,8 @@ class CacheManager:
             return (
                 f"Strava answered for athlete {', '.join(str(i) for i in sorted(strangers))}, "
                 f"but this vault belongs to athlete {', '.join(str(i) for i in sorted(expected))}"
-            )
-        return None
+            ), None
+        return None, None
 
     async def check_vault(
         self,
@@ -817,6 +835,8 @@ class CacheManager:
         """
         after, before = parse_window(after, before)
         types = sport_types if isinstance(sport_types, list) else parse_sport_types(sport_types)
+        if max_delete is not None and not delete_gone:
+            raise ValueError("max_delete only applies together with delete_gone=true.")
         if max_delete is not None and max_delete < 0:
             raise ValueError("max_delete must be 0 or more.")
         started_at = time.time()
@@ -848,7 +868,8 @@ class CacheManager:
         }
         report["repair"] = repair
 
-        refused = await self._athlete_mismatch(fetched, may_ask=True)
+        refused, unverified = await self._athlete_check(fetched, may_ask=True)
+        report["athlete_unverified"] = unverified
         if refused:
             repair["refused"] = refused
         else:
@@ -858,7 +879,7 @@ class CacheManager:
             repair["added"] = [a["id"] for a in to_store if a["id"] not in existed]
             repair["updated"] = len(existed)
             if delete_gone:
-                await self._delete_gone(report, max_delete)
+                await self._delete_gone(report, max_delete, athlete_unverified=bool(unverified))
 
         after_rows = await self.db.get_vault_index(after, before, types or None)
         repair["vault_after"] = {
@@ -878,19 +899,51 @@ class CacheManager:
         )
         return report
 
-    async def _delete_gone(self, report: dict, max_delete: int | None) -> None:
+    async def _delete_gone(
+        self, report: dict, max_delete: int | None, *, athlete_unverified: bool
+    ) -> None:
         """Delete the vault rows Strava confirms, one by one, no longer exist."""
         repair = report["repair"]
         gone = report["gone"]
+        cap = (
+            max_delete
+            if max_delete is not None
+            else max(DELETE_CAP_MIN, math.ceil(DELETE_CAP_SHARE * report["vault"]["count"]))
+        )
+        repair["delete_cap"] = cap
         if not report["complete"]:
             repair["delete_note"] = (
                 "Nothing was deleted: the check stopped early, so an activity not "
                 "fetched yet could look deleted."
             )
             return
+        ids = [r["id"] for r in gone or []]
+        # A ride stored while public and later set to Only You is hidden from a
+        # token without activity:read_all, which may also get a 404 for it, and
+        # the stored copy still says public. Only a token known to see private
+        # rides can tell "deleted" from "hidden".
+        scope = await self.db.get_meta("token_scope")
+        if "activity:read_all" not in set(re.split(r"[ ,]+", scope or "")):
+            repair["would_delete"] = ids
+            held = (
+                f"the token's recorded permissions ({scope}) do not include activity:read_all"
+                if scope
+                else "this vault has no record of the permissions its Strava token was granted"
+            )
+            repair["delete_note"] = (
+                f"Nothing was deleted: {held}, so a ride made private on Strava would look "
+                "deleted. Running strava-mcp-vault-login once, in its default mode that writes "
+                "to the vault, records them."
+            )
+            return
+        if athlete_unverified:
+            repair["would_delete"] = ids
+            repair["delete_note"] = (
+                "Nothing was deleted: the vault's athlete could not be checked against the token."
+            )
+            return
         if not gone:
             return
-        ids = [r["id"] for r in gone]
         if report["strava"]["count"] == 0:
             repair["would_delete"] = ids
             repair["delete_note"] = (
@@ -898,11 +951,6 @@ class CacheManager:
                 "which is more likely an incomplete answer than a deleted history."
             )
             return
-        cap = (
-            max_delete
-            if max_delete is not None
-            else max(DELETE_CAP_MIN, math.ceil(DELETE_CAP_SHARE * report["vault"]["count"]))
-        )
         if len(ids) > cap:
             repair["would_delete"] = ids
             repair["delete_note"] = (

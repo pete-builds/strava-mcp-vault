@@ -360,11 +360,17 @@ nothing.
 
 Activities missing from Strava's list are kept. A ride can be absent from the
 list because the token cannot see it or because Strava's answer was incomplete,
-so `delete_gone=true` deletes one only when all of these hold: the whole window
-was read, Strava's side of it is not empty, the number to delete is at most 10
+so `delete_gone=true` deletes one only when all of these hold: the vault knows
+its token holds `activity:read_all` (recorded when `strava-mcp-vault-login`
+writes to the vault; a token seeded from environment variables, including the
+`--env-file` Docker setup, has no record, so deletes are refused), the vault's
+stored activities name its Strava athlete, the whole window was read, Strava's side of it is not empty, the number to delete is at most 10
 or 5 percent of the window (whichever is larger; `max_delete` changes that for
 one run), the ride was not stored as private, and Strava answers 404 when asked
-for that ride by id. Anything else keeps the ride and the report says why.
+for that ride by id. Anything else keeps the ride and the report says why. The
+report always shows the delete limit that applied, and `max_delete` is only
+accepted together with `delete_gone`. Sport names are matched without regard to
+case, and a window where both sides have nothing says so instead of "matches".
 
 **Back up the vault before using `delete_gone`.** With the shipped
 `docker-compose.yml` and the default `VAULT_DB_PATH`, this writes a consistent

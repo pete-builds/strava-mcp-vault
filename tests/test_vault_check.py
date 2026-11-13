@@ -102,6 +102,11 @@ def strava_detail(answers: dict):
     return get_activity
 
 
+async def _grant_read_all(db):
+    """Record what strava-mcp-vault-login records: the token can see private rides."""
+    await db.set_meta("token_scope", "activity:read_all")
+
+
 # ── Holes: reported by month, then restored by repair ──────────────────
 
 
@@ -173,6 +178,7 @@ async def test_report_reads_plainly(cache_manager, tmp_db):
 async def test_deleted_on_strava_is_flagged_and_only_removed_with_the_flag(cache_manager, tmp_db):
     season = _season()
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     deleted = [season[4], season[17]]
     remaining = [a for a in season if a not in deleted]
     cache_manager.client.get_activities.side_effect = strava_list(remaining)
@@ -450,6 +456,7 @@ async def test_an_old_layout_vault_gains_history_and_keeps_its_data(tmp_path, mo
 async def test_f1a_each_deletion_is_confirmed_with_strava_first(cache_manager, tmp_db):
     season = _season()
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     deleted, shifted, erroring = season[2], season[8], season[14]
     listed = [a for a in season if a not in (deleted, shifted, erroring)]
     cache_manager.client.get_activities.side_effect = strava_list(listed)
@@ -474,6 +481,7 @@ async def test_f1a_each_deletion_is_confirmed_with_strava_first(cache_manager, t
 async def test_f1a_confirmation_stops_when_the_read_budget_runs_out(cache_manager, tmp_db, how):
     season = _season()
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     first, second = season[2], season[8]
     cache_manager.client.get_activities.side_effect = strava_list(
         [a for a in season if a not in (first, second)]
@@ -499,6 +507,7 @@ async def test_f1a_confirmation_stops_when_the_read_budget_runs_out(cache_manage
 async def test_f1b_an_empty_answer_from_strava_deletes_nothing(cache_manager, tmp_db):
     season = _season()
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     cache_manager.client.get_activities.side_effect = strava_list([])
     cache_manager.client.get_activity.side_effect = strava_detail({a["id"]: 404 for a in season})
 
@@ -513,6 +522,7 @@ async def test_f1b_an_empty_answer_from_strava_deletes_nothing(cache_manager, tm
 async def test_f1c_a_mass_delete_is_refused_unless_max_delete_allows_it(cache_manager, tmp_db):
     season = _season()
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     gone = season[:12]
     cache_manager.client.get_activities.side_effect = strava_list(season[12:])
     cache_manager.client.get_activity.side_effect = strava_detail({a["id"]: 404 for a in gone})
@@ -545,8 +555,8 @@ async def test_f1d_another_accounts_token_refuses_repair_and_delete(cache_manage
     check = await cache_manager.check_vault()
     assert "999" in check["athlete_warning"] and "12345" in check["athlete_warning"]
 
-    for delete_gone in (False, True):
-        report = await cache_manager.repair_vault(delete_gone=delete_gone, max_delete=1000)
+    for extra in ({}, {"delete_gone": True, "max_delete": 1000}):
+        report = await cache_manager.repair_vault(**extra)
         assert "999" in report["repair"]["refused"]
         assert report["repair"]["added"] == [] and report["repair"]["removed"] == []
     assert await tmp_db.get_vault_activity_count() == len(season)
@@ -582,6 +592,7 @@ async def test_f1_a_private_ride_is_never_deleted(cache_manager, tmp_db):
     private = {**season[5], "visibility": "only_me", "private": True}
     season[5] = private
     await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
     cache_manager.client.get_activities.side_effect = strava_list(
         [a for a in season if a is not private]
     )
@@ -758,3 +769,179 @@ async def test_f6_a_failed_history_write_does_not_hide_the_real_error(
         await cache_manager.sync_activities()
     with pytest.raises(RuntimeError, match="network down"):
         await cache_manager.repair_vault()
+
+
+# ── Second review ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("scope", [None, "read,activity:read"])
+async def test_n1_a_ride_made_private_is_kept_without_a_read_all_token(
+    cache_manager, tmp_db, scope
+):
+    """Stored while public, later set to Only You on Strava. A token without
+    activity:read_all no longer lists it and may get a 404 for it."""
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    if scope:
+        await tmp_db.set_meta("token_scope", scope)
+    hidden = season[6]  # the stored copy still says visibility "everyone"
+    cache_manager.client.get_activities.side_effect = strava_list(
+        [a for a in season if a is not hidden]
+    )
+    cache_manager.client.get_activity.side_effect = strava_detail({hidden["id"]: 404})
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+
+    assert report["repair"]["removed"] == []
+    assert await tmp_db.get_activity_row(hidden["id"]) is not None
+    assert "strava-mcp-vault-login" in report["repair"]["delete_note"]
+    cache_manager.client.get_activity.assert_not_awaited()
+
+
+async def test_n2_an_empty_window_does_not_match(cache_manager, tmp_db):
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    cache_manager.client.get_activities.side_effect = strava_list(season)
+
+    report = await cache_manager.check_vault(after="2030-01-01")
+
+    assert report["matches"] is False
+    text = format_vault_check(report)
+    assert "matches Strava" not in text
+    assert "Nothing to compare" in text and "sport names" in text
+
+
+async def test_n2_sport_names_ignore_case(cache_manager, tmp_db):
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    cache_manager.client.get_activities.side_effect = strava_list(season)
+
+    report = await cache_manager.check_vault(sport_types="ride")
+
+    assert report["strava"]["count"] == report["vault"]["count"] == 18
+    assert report["matches"] is True
+
+
+async def test_n3_athlete_less_rows_record_nothing_and_delete_nothing(cache_manager, tmp_db):
+    season = [{k: v for k, v in a.items() if k != "athlete"} for a in _season()]
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    # The token now belongs to someone else, and its rides carry their id.
+    stranger = [{**_ride(500 + i, 2, 1 + i), "athlete": {"id": 999}} for i in range(3)]
+    cache_manager.client.get_activities.side_effect = strava_list(stranger)
+    cache_manager.client.get_athlete.return_value = {"id": 999}
+    cache_manager.client.get_activity.side_effect = strava_detail({a["id"]: 404 for a in season})
+
+    report = await cache_manager.repair_vault(delete_gone=True, max_delete=1000)
+
+    assert report["repair"]["removed"] == []
+    assert await tmp_db.get_vault_activity_count() >= len(season)
+    assert await tmp_db.get_meta("athlete_id") is None
+    assert report["athlete_unverified"]
+    assert "do not say which Strava athlete" in format_vault_check(report)
+    cache_manager.client.get_activity.assert_not_awaited()
+
+
+async def test_n4_the_delete_limit_is_always_shown_and_max_delete_needs_delete_gone(
+    cache_manager, tmp_db
+):
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    cache_manager.client.get_activities.side_effect = strava_list(season)
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+    assert report["repair"]["delete_cap"] == 10
+    assert "Delete limit this run: 10" in format_vault_check(report)
+
+    with pytest.raises(ValueError, match="delete_gone"):
+        await cache_manager.repair_vault(max_delete=5)
+
+
+# ── Guards the second review's mutations slipped past ──────────────────
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_g1_an_auth_error_during_confirmation_keeps_the_ride(cache_manager, tmp_db, status):
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    target = season[4]
+    cache_manager.client.get_activities.side_effect = strava_list(
+        [a for a in season if a is not target]
+    )
+    cache_manager.client.get_activity.side_effect = strava_detail({target["id"]: status})
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+
+    assert report["repair"]["removed"] == []
+    assert str(status) in report["repair"]["kept"][0]["reason"]
+
+
+async def test_g2_a_connection_error_during_confirmation_keeps_the_ride(cache_manager, tmp_db):
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    target = season[4]
+    cache_manager.client.get_activities.side_effect = strava_list(
+        [a for a in season if a is not target]
+    )
+    cache_manager.client.get_activity.side_effect = httpx.ConnectError("connection reset")
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+
+    assert report["repair"]["removed"] == []
+    assert "could not be reached" in report["repair"]["kept"][0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "marking",
+    [{"private": True, "visibility": "everyone"}, {"visibility": "only_me"}],
+    ids=["private-flag-alone", "visibility-alone"],
+)
+async def test_g3_the_private_guard_reads_either_field(cache_manager, tmp_db, marking):
+    season = _season()
+    target = {k: v for k, v in season[5].items() if k != "visibility"}
+    target.update(marking)
+    season[5] = target
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    cache_manager.client.get_activities.side_effect = strava_list(
+        [a for a in season if a is not target]
+    )
+    cache_manager.client.get_activity.side_effect = strava_detail({target["id"]: 404})
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+
+    assert report["repair"]["removed"] == []
+    assert "private" in report["repair"]["kept"][0]["reason"]
+
+
+async def test_g4_a_vault_holding_two_athletes_is_refused(cache_manager, tmp_db):
+    season = _season()
+    season[0] = {**season[0], "athlete": {"id": 999}}
+    await tmp_db.upsert_activities_batch(season)
+    await _grant_read_all(tmp_db)
+    cache_manager.client.get_activities.side_effect = strava_list(season[1:])
+    cache_manager.client.get_activity.side_effect = strava_detail({season[0]["id"]: 404})
+
+    report = await cache_manager.repair_vault(delete_gone=True)
+
+    assert "more than one Strava athlete" in report["repair"]["refused"]
+    assert report["repair"]["removed"] == []
+    assert await tmp_db.get_activity_row(season[0]["id"]) is not None
+
+
+@respx.mock
+async def test_g5_a_scan_stopped_by_the_budget_never_matches(tmp_db, real_client, monkeypatch):
+    monkeypatch.setattr(manager_module, "LIST_PAGE_SIZE", 4)
+    season = _season()
+    await tmp_db.upsert_activities_batch(season)  # the vault is complete
+    respx.get(LIST_URL).mock(side_effect=FakeStrava(season, read_usage_start=93))
+
+    report = await CacheManager(tmp_db, real_client).check_vault()
+
+    assert report["complete"] is False
+    assert report["missing"] == [] and report["changed"] == []
+    assert report["strava"]["count"] == report["vault"]["count"]
+    assert report["matches"] is False

@@ -755,9 +755,11 @@ async def repair_vault(
     different athlete than the vault belongs to, nothing is stored or deleted.
 
     Vault activities missing from Strava's list are kept by default. With
-    delete_gone=true, each one is deleted only if the whole window was read,
-    Strava's side of it is not empty, the count is within the cap, it was not
-    stored as private, and Strava answers 404 for that activity's id. Every
+    delete_gone=true, each one is deleted only if the token is known to hold
+    activity:read_all (recorded by strava-mcp-vault-login), the vault's athlete
+    was verified, the whole window was read, Strava's side of it is not empty,
+    the count is within the cap, it was not stored as private, and Strava
+    answers 404 for that activity's id. Every
     deletion and every activity kept is named in the report. Back up the vault
     file before using delete_gone.
 
@@ -769,7 +771,7 @@ async def repair_vault(
         before: Only activities before this local date (ISO, e.g. "2026-07-01").
         sport_types: Comma-separated types to repair (e.g. "Ride,GravelRide"). Default all.
         delete_gone: Delete vault activities Strava confirms no longer exist. Default false.
-        max_delete: Most deletions allowed in this run. Default the larger of 10 and 5 percent of the window.
+        max_delete: Most deletions allowed in this run, only with delete_gone. Default the larger of 10 and 5 percent of the window.
     """
     try:
         report = await manager.repair_vault(

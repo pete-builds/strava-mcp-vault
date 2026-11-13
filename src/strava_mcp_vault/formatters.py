@@ -1019,6 +1019,8 @@ def format_vault_check(report: dict) -> str:
             f"**Different Strava account:** {report['athlete_warning']}. The token in use "
             "may not be the vault owner's.\n"
         )
+    if report.get("athlete_unverified"):
+        lines.append(f"**Account not verified:** {report['athlete_unverified']}.\n")
 
     missing, gone, changed = report["missing"], report["gone"], report.get("changed") or []
     s, v = report["strava"], report["vault"]
@@ -1027,6 +1029,11 @@ def format_vault_check(report: dict) -> str:
             f"**Stopped early:** {report['stop_reason']}. "
             f"Strava was checked through {report.get('checked_through') or 'nothing yet'}; "
             "the numbers below cover only that stretch.\n"
+        )
+    elif report.get("empty"):
+        lines.append(
+            "**Result:** Nothing to compare: Strava and the vault both have 0 activities in "
+            "this window. Check the dates and sport names.\n"
         )
     elif report.get("matches"):
         lines.append("**Result:** the vault matches Strava for this window.\n")
@@ -1108,6 +1115,8 @@ def format_vault_check(report: dict) -> str:
         if repair.get("kept"):
             lines.append(f"- **Kept after checking with Strava ({len(repair['kept'])}):**")
             lines.extend(f"  - id {k['id']}: {k['reason']}" for k in repair["kept"])
+        if repair.get("delete_cap") is not None:
+            lines.append(f"- Delete limit this run: {repair['delete_cap']}")
         if repair.get("delete_note"):
             lines.append(f"- {repair['delete_note']}")
         if repair.get("would_delete"):

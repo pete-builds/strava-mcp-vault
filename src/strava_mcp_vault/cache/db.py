@@ -643,8 +643,9 @@ class CacheDB:
             conditions.append("start_date_local < ?")
             params.append(before)
         if sport_types:
-            conditions.append(f"sport_type IN ({','.join('?' for _ in sport_types)})")
-            params.extend(sport_types)
+            # Case-insensitive, so "ride" means Ride rather than matching nothing.
+            conditions.append(f"LOWER(sport_type) IN ({','.join('?' for _ in sport_types)})")
+            params.extend(t.lower() for t in sport_types)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = await self._db.execute(
             "SELECT id, start_date_local, sport_type, json_extract(data, '$.distance'), "
