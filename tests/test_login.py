@@ -5,6 +5,7 @@ redirect the way Strava would."""
 import asyncio
 import base64
 import fnmatch
+import gc
 import json
 import os
 import socket
@@ -18,6 +19,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -402,21 +404,26 @@ def vault_env(monkeypatch, tmp_path):
 
 
 def test_wrong_state_is_refused_and_stores_nothing(token_endpoint, vault_env, capsys):
+    """Refused with a 400 and a terminal line, nothing exchanged or stored, and
+    the command keeps waiting (here until a short --timeout)."""
     browser = _FakeBrowser(state="not-the-state-this-sign-in-sent")
-    assert _run_main([], token_endpoint, browser) == 1
+    assert _run_main(["--timeout", "1"], token_endpoint, browser) == 1
 
     assert token_endpoint.requests == []  # the code was never exchanged
     assert _no_tokens_stored(vault_env)
     browser.thread.join(5)
     assert browser.status == 400
     assert "not accepted" in browser.page
-    assert "Refused the redirect" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert captured.out.count(login.REFUSAL_LINE) == 1
+    assert "Timed out" in captured.err
 
 
-def test_missing_state_is_refused(token_endpoint, vault_env):
-    assert _run_main([], token_endpoint, _FakeBrowser(state=None)) == 1
+def test_missing_state_is_refused(token_endpoint, vault_env, capsys):
+    assert _run_main(["--timeout", "1"], token_endpoint, _FakeBrowser(state=None)) == 1
     assert token_endpoint.requests == []
     assert _no_tokens_stored(vault_env)
+    assert capsys.readouterr().out.count(login.REFUSAL_LINE) == 1
 
 
 def test_wrong_state_refused_in_env_file_mode(token_endpoint, monkeypatch, tmp_path):
@@ -425,9 +432,19 @@ def test_wrong_state_refused_in_env_file_mode(token_endpoint, monkeypatch, tmp_p
     env_file = tmp_path / ".env"
     env_file.write_text("STRAVA_ACCESS_TOKEN=unchanged\n")
     browser = _FakeBrowser(state="forged")
-    assert _run_main(["--env-file", str(env_file)], token_endpoint, browser) == 1
+    rc = _run_main(["--env-file", str(env_file), "--timeout", "1"], token_endpoint, browser)
+    assert rc == 1
     assert env_file.read_text() == "STRAVA_ACCESS_TOKEN=unchanged\n"
     assert token_endpoint.requests == []
+
+
+def test_check_callback_refuses_wrong_state_on_its_own():
+    """Second line of defence: even if the listener handed over a query with
+    the wrong state, the code is never returned."""
+    query = {"state": ["other"], "code": [CODE], "scope": [GRANTED]}
+    with pytest.raises(login.LoginError, match="Refused the redirect"):
+        login._check_callback(query, "expected")
+    assert login._check_callback(dict(query, state=["expected"]), "expected") == CODE
 
 
 def test_denied_authorization_stores_nothing(token_endpoint, vault_env, capsys):
@@ -459,12 +476,20 @@ def _callback_target(state, **extra):
     return f"{login.CALLBACK_PATH}?{urllib.parse.urlencode(query)}"
 
 
-def _raw_get(port, target):
-    """One HTTP request on its own connection. Returns the status line, or ""
-    if the connection was refused or closed without a response."""
+def _raw_get(port, target, method="GET", host="localhost:{port}", extra="", pieces=1):
+    """One HTTP request on its own connection, as a browser would send it to
+    http://localhost:PORT. Returns the status line, or "" if the connection was
+    refused or closed without a response. host=None sends no Host header;
+    pieces > 1 sends the request in that many separate writes."""
+    host_line = "" if host is None else f"Host: {host.format(port=port)}\r\n"
+    raw = f"{method} {target} HTTP/1.1\r\n{host_line}{extra}\r\n".encode("latin-1")
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-            sock.sendall(f"GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+            size = -(-len(raw) // pieces)
+            for i in range(0, len(raw), size):
+                sock.sendall(raw[i : i + size])
+                if pieces > 1:
+                    time.sleep(0.05)
             data = b""
             while True:
                 chunk = sock.recv(4096)
@@ -669,26 +694,238 @@ def test_slow_byte_connection_cannot_outlive_deadline(token_endpoint, vault_env,
     assert _no_tokens_stored(vault_env)
 
 
-def test_one_wrong_callback_ends_the_sign_in(token_endpoint, vault_env):
-    """No second guesses: after one /callback with the wrong state, the right
-    state is not accepted."""
-    statuses = []
+class _Script:
+    """A browser stand-in that runs a list of raw requests in order."""
 
-    def browser(url):
+    def __init__(self, *steps):
+        self.steps = steps
+        self.results = []
+        self.thread = None
+
+    def __call__(self, url):
         port, state = _redirect_parts(url)
 
-        def follow():
-            statuses.append(_raw_get(port, _callback_target("a-guess")))
-            statuses.append(_raw_get(port, _callback_target(state)))
+        def run():
+            for step in self.steps:
+                self.results.append(step(port, state))
 
-        browser.thread = threading.Thread(target=follow, daemon=True)
-        browser.thread.start()
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
 
-    assert _run_main(["--timeout", "3"], token_endpoint, browser) == 1
-    browser.thread.join(5)
-    assert statuses == ["HTTP/1.1 400 Bad Request", ""]  # refused, then nobody listening
+    def join(self):
+        self.thread.join(10)
+        return self.results
+
+
+def _real_redirect(port, state):
+    return _raw_get(port, _callback_target(state))
+
+
+def _q(*pairs):
+    return f"{login.CALLBACK_PATH}?{urllib.parse.urlencode(pairs)}"
+
+
+def test_wrong_callback_does_not_end_the_sign_in(token_endpoint, vault_env, capsys):
+    """A wrong state is refused, but it no longer ends the sign-in: any web page
+    could otherwise kill it with one request. The right redirect still lands."""
+    browser = _Script(
+        lambda port, state: _raw_get(
+            port, _q(("state", "a-guess"), ("code", "guess"), ("scope", GRANTED))
+        ),
+        _real_redirect,
+    )
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 400 Bad Request", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+    assert capsys.readouterr().out.count(login.REFUSAL_LINE) == 1
+    assert _read_vault(vault_env)["access_token"] == ACCESS
+
+
+def test_too_many_refusals_give_up(token_endpoint, vault_env, capsys, listeners):
+    spray = [
+        lambda port, state: _raw_get(port, _q(("state", "x"), ("code", "c")))
+    ] * login.MAX_REFUSALS
+    browser = _Script(*spray)
+    started = time.monotonic()
+    assert _run_main(["--timeout", "8"], token_endpoint, browser) == 1
+    assert time.monotonic() - started < 5
+    assert browser.join() == ["HTTP/1.1 400 Bad Request"] * login.MAX_REFUSALS
+    captured = capsys.readouterr()
+    assert captured.out.count(login.REFUSAL_LINE) == login.MAX_REFUSALS
+    assert "Another program or web page on this computer" in captured.err
     assert token_endpoint.requests == []
     assert _no_tokens_stored(vault_env)
+    assert listeners[0].fileno() == -1
+
+
+# --------------------------------------------------------------------------
+# Request parsing: exact, and never a crash
+# --------------------------------------------------------------------------
+
+
+def test_unparseable_targets_do_not_crash(token_endpoint, vault_env):
+    """urlsplit raised ValueError on these, which escaped as a traceback."""
+    browser = _Script(
+        lambda port, state: _raw_get(port, "//[x"),
+        lambda port, state: _raw_get(port, "http://[::1/callback"),
+        _real_redirect,
+    )
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found"] * 2 + ["HTTP/1.1 200 OK"]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "http://evil.example{path}",
+        "http:{path}",
+        "/call\tback{query}",
+        "\x01{path}",
+        "/callbackX{query}",
+        "{path_only}/x{query}",
+    ],
+    ids=[
+        "absolute-url",
+        "scheme-no-slashes",
+        "tab-in-path",
+        "leading-control",
+        "suffix",
+        "subpath",
+    ],
+)
+def test_lookalike_paths_get_404(token_endpoint, vault_env, shape):
+    """Each carries the RIGHT state and a code, so if it were treated as
+    /callback the sign-in would finish on it. It must be a 404 instead."""
+
+    def lookalike(port, state):
+        query = "?" + urllib.parse.urlencode(
+            {"state": state, "code": "lookalike", "scope": GRANTED}
+        )
+        target = shape.format(
+            path=login.CALLBACK_PATH + query, query=query, path_only=login.CALLBACK_PATH
+        )
+        return _raw_get(port, target)
+
+    browser = _Script(lookalike, _real_redirect)
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_only_get_is_accepted_on_callback(token_endpoint, vault_env):
+    browser = _Script(
+        lambda port, state: _raw_get(port, _callback_target(state, code="posted"), method="POST"),
+        _real_redirect,
+    )
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+@pytest.mark.parametrize(
+    "host", ["evil.example:{port}", None, "localhost:1", "localhost:{port}\r\nHost: x"]
+)
+def test_callback_needs_a_loopback_host_header(token_endpoint, vault_env, host):
+    """A page on another name that resolves to 127.0.0.1 (DNS rebinding) sends
+    its own Host header. Only localhost:PORT and 127.0.0.1:PORT are served."""
+    browser = _Script(
+        lambda port, state: _raw_get(port, _callback_target(state, code="rebound"), host=host),
+        _real_redirect,
+    )
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 404 Not Found", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_127_0_0_1_host_is_served(token_endpoint, vault_env):
+    browser = _Script(
+        lambda port, state: _raw_get(port, _callback_target(state), host="127.0.0.1:{port}")
+    )
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+
+
+@pytest.mark.parametrize(
+    "states",
+    [("GOOD", "GOOD"), ("BAD", "GOOD"), ("GOOD", "BAD")],
+    ids=["same", "bad-first", "good-first"],
+)
+def test_duplicate_state_is_refused(token_endpoint, vault_env, states):
+    def duplicated(port, state):
+        values = [state if s == "GOOD" else "bad" for s in states]
+        pairs = [("state", v) for v in values] + [("code", "dup"), ("scope", GRANTED)]
+        return _raw_get(port, _q(*pairs))
+
+    browser = _Script(duplicated, _real_redirect)
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 400 Bad Request", "HTTP/1.1 200 OK"]
+    assert [r["code"] for r in token_endpoint.requests] == [CODE]
+
+
+def test_request_in_five_pieces_is_accepted(token_endpoint, vault_env):
+    browser = _Script(lambda port, state: _raw_get(port, _callback_target(state), pieces=5))
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 200 OK"]
+
+
+def test_oversized_request_is_dropped(token_endpoint, vault_env, monkeypatch):
+    monkeypatch.setattr(login, "MAX_REQUEST_BYTES", 64)
+    seen = {}
+
+    def oversized(port, state):
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.sendall(b"GET /callback?" + b"a" * 200)  # no end of headers
+            sock.settimeout(2)
+            try:
+                seen["read"] = sock.recv(1)  # b"" means the listener dropped it
+            except OSError as exc:
+                seen["read"] = exc
+        return "sent"
+
+    browser = _Script(oversized, _real_redirect)
+    assert _run_main(["--timeout", "8"], token_endpoint, browser) == 0
+    assert browser.join() == ["sent", "HTTP/1.1 200 OK"]
+    assert seen["read"] == b""
+
+
+def test_large_cookies_do_not_drop_the_redirect(token_endpoint, vault_env):
+    """Developers' localhost cookies can run to tens of kilobytes."""
+    cookie = "Cookie: " + "; ".join(f"c{i}={'v' * 90}" for i in range(400)) + "\r\n"
+    assert 32768 < len(cookie) < login.MAX_REQUEST_BYTES
+    browser = _Script(lambda port, state: _raw_get(port, _callback_target(state), extra=cookie))
+    assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+    assert browser.join() == ["HTTP/1.1 200 OK"]
+
+
+def test_held_connections_are_closed_on_exit(token_endpoint, vault_env):
+    """Idle connections still open when the sign-in ends are closed by the
+    command itself, not left for garbage collection."""
+    held = []
+
+    def hold_two_then_redirect(port, state):
+        for _ in range(2):
+            held.append(socket.create_connection(("127.0.0.1", port), timeout=5))
+        time.sleep(0.2)
+        return _real_redirect(port, state)
+
+    browser = _Script(hold_two_then_redirect)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        assert _run_main(["--timeout", "5"], token_endpoint, browser) == 0
+        browser.join()
+        reads = []
+        for sock in held:
+            sock.settimeout(2)
+            try:
+                reads.append(sock.recv(1))
+            except OSError as exc:
+                reads.append(exc)
+            sock.close()
+        gc.collect()
+    assert reads == [b"", b""]
+    unclosed = [
+        w for w in caught if issubclass(w.category, ResourceWarning) and "socket" in str(w.message)
+    ]
+    assert unclosed == []
 
 
 def test_token_endpoint_error_stores_nothing(vault_env, capsys):
@@ -722,7 +959,7 @@ def test_nothing_secret_in_output_or_logs(token_endpoint, vault_env, capfd, capl
     caplog.set_level("DEBUG")
     assert _run_main([], token_endpoint, _FakeBrowser()) == 0
     # A refused run too, since error paths are where secrets usually leak.
-    assert _run_main([], token_endpoint, _FakeBrowser(state="forged")) == 1
+    assert _run_main(["--timeout", "1"], token_endpoint, _FakeBrowser(state="forged")) == 1
 
     captured = capfd.readouterr()
     everything = captured.out + captured.err + caplog.text
@@ -841,40 +1078,61 @@ def test_encryption_reported_from_what_happened(token_endpoint, vault_env, monke
     assert row == (ACCESS, REFRESH)  # what really happened: plain text
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        Fernet.generate_key().decode(),
-        Fernet.generate_key().decode()[:-1],
-        Fernet.generate_key().decode().replace("=", ""),
-        "!" + Fernet.generate_key().decode(),
-        "not-a-valid-fernet-key",
-        "abc123",
-        "\u00e9" * 44,
-        base64.urlsafe_b64encode(b"x" * 31).decode(),
-        base64.urlsafe_b64encode(b"x" * 33).decode(),
-    ],
-    ids=[
-        "valid",
-        "truncated",
-        "padding-stripped",
-        "junk-prefix",
-        "plain-words",
-        "short",
-        "non-ascii",
-        "31-bytes",
-        "33-bytes",
-    ],
-)
-def test_stdlib_key_check_agrees_with_cryptography(key):
-    """The env-file mode checks keys without cryptography installed. It must
-    accept exactly what Fernet accepts."""
-    try:
+_REAL_KEY = Fernet.generate_key().decode()
+
+# (key, what the stdlib check must answer). The "=" insertions at positions
+# 3, 19 and 39 are keys Python 3.14's base64 decodes to 32 bytes while the
+# server's Python 3.13 Fernet rejects them; "junk after padding" goes the other
+# way. A shape check makes the answer the same on every Python.
+_KEY_CASES = [
+    (_REAL_KEY, True),
+    (_REAL_KEY[:-1], False),
+    (_REAL_KEY.replace("=", ""), False),
+    ("!" + _REAL_KEY, False),
+    ("not-a-valid-fernet-key", False),
+    ("abc123", False),
+    ("\u00e9" * 44, False),
+    (base64.urlsafe_b64encode(b"x" * 31).decode(), False),
+    (base64.urlsafe_b64encode(b"x" * 33).decode(), False),
+    (_REAL_KEY[:3] + "=" + _REAL_KEY[3:], False),
+    (_REAL_KEY[:19] + "=" + _REAL_KEY[19:], False),
+    (_REAL_KEY[:39] + "=" + _REAL_KEY[39:], False),
+    (_REAL_KEY + "AAAA", False),
+    (_REAL_KEY + "=", False),
+    (" " + _REAL_KEY, False),
+    (_REAL_KEY + "\n", False),
+]
+_KEY_IDS = [
+    "valid",
+    "truncated",
+    "padding-stripped",
+    "junk-prefix",
+    "plain-words",
+    "short",
+    "non-ascii",
+    "31-bytes",
+    "33-bytes",
+    "eq-at-3",
+    "eq-at-19",
+    "eq-at-39",
+    "junk-after-padding",
+    "double-padding",
+    "leading-space",
+    "trailing-newline",
+]
+
+
+@pytest.mark.parametrize("key,expected", _KEY_CASES, ids=_KEY_IDS)
+def test_stdlib_key_check(key, expected):
+    assert login._fernet_key_is_valid(key) is expected
+    if expected:
+        # Sound: whatever the stdlib check accepts, Fernet accepts.
         Fernet(key.encode())
-        fernet_ok = True
-    except Exception:
-        fernet_ok = False
-    assert login._fernet_key_is_valid(key) is fernet_ok
+
+
+def test_stdlib_key_check_accepts_every_generated_key():
+    keys = [Fernet.generate_key().decode() for _ in range(500)]
+    assert all(login._fernet_key_is_valid(k) for k in keys)
 
 
 # --------------------------------------------------------------------------
@@ -962,6 +1220,18 @@ def test_bad_arguments_rejected(token_endpoint):
     assert _run_main(["--timeout", "0"], token_endpoint, _FakeBrowser()) == 2
 
 
+@pytest.mark.parametrize("value", ["inf", "nan", "-inf"])
+def test_non_finite_timeout_rejected(token_endpoint, vault_env, value):
+    opened = []
+
+    def browser(url):
+        opened.append(url)
+        _FakeBrowser()(url)  # complete the sign-in if the check is missing
+
+    assert _run_main([f"--timeout={value}"], token_endpoint, browser) == 2
+    assert opened == []
+
+
 def test_runs_from_a_clone_with_stdlib_only():
     """README tells Docker users to run the file straight from the clone, so it
     must not import anything outside the standard library at module level."""
@@ -983,3 +1253,14 @@ def test_runs_from_a_clone_with_stdlib_only():
     )
     assert help_run.returncode == 0, help_run.stderr
     assert "--env-file" in help_run.stdout
+
+
+def test_stdlib_smoke_script_passes():
+    """tests/stdlib_smoke.py is what CI runs on Python 3.9 with no packages.
+    Run it here too, isolated (-I), so it stays green on every Python."""
+    script = Path(__file__).resolve().parent / "stdlib_smoke.py"
+    result = subprocess.run(
+        [sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all checks passed" in result.stdout

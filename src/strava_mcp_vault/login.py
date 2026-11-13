@@ -10,12 +10,16 @@ with a web browser:
 2. It starts a listener bound to 127.0.0.1 only, on a free port (or
    ``--port``).
 3. It opens the browser at Strava's authorize URL with a random ``state``.
-4. It waits for ONE ``GET /callback``, with a single deadline (``--timeout``)
-   covering the whole wait, including slow or idle connections. Connections
-   that close early, sit idle, or ask for anything else (a favicon, say) are
-   answered or dropped and do not count. The first ``GET /callback`` ends the
-   wait either way: if its ``state`` does not match, the sign-in is refused and
-   nothing is stored, so there is no second guess. The listener then closes.
+4. It waits for a ``GET /callback`` carrying this sign-in's ``state``, with a
+   single deadline (``--timeout``) covering the whole wait, including slow or
+   idle connections. Requests are matched exactly: the path must be exactly
+   ``/callback`` and the Host header ``localhost:PORT`` or ``127.0.0.1:PORT``.
+   Anything else (a favicon, an idle or early-closed connection, a lookalike
+   path) is answered 404 or dropped and does not count. A ``/callback`` with a
+   wrong or missing ``state`` is refused (400, one line in the terminal,
+   nothing stored) and the wait goes on, so a web page cannot end the sign-in
+   by spraying guesses; after ``MAX_REFUSALS`` of them the command gives up.
+   The listener closes as soon as the right redirect arrives or the wait ends.
 5. It exchanges the code for tokens and stores them where the server will look:
 
    * Default: the vault database at ``VAULT_DB_PATH``, written through
@@ -48,6 +52,7 @@ import base64
 import binascii
 import getpass
 import json
+import math
 import os
 import re
 import secrets
@@ -78,11 +83,18 @@ LISTEN_HOST = "127.0.0.1"
 # the loopback address the listener is bound to.
 REDIRECT_HOST = "localhost"
 DEFAULT_TIMEOUT = 300
-# A request head bigger than this is not a browser following a redirect.
-MAX_REQUEST_BYTES = 16384
+# Largest request head buffered per connection. Generous because a developer's
+# localhost cookies ride along on the redirect and can run to tens of KB.
+MAX_REQUEST_BYTES = 65536
 # Open connections held at once. Past this the oldest is dropped, so a flood of
-# idle connections cannot crowd out the real redirect.
+# idle connections cannot exhaust file descriptors. Together with the limit
+# above, the listener never buffers more than 32 x 64 KiB = 2 MiB.
 MAX_OPEN_CONNECTIONS = 32
+# Query parameters parsed from one request. Strava sends three.
+MAX_QUERY_FIELDS = 20
+# /callback requests with the wrong state tolerated before giving up.
+MAX_REFUSALS = 10
+REFUSAL_LINE = "A request to /callback without this sign-in's state was refused; still waiting"
 TOKEN_REQUEST_TIMEOUT = 30
 DEFAULT_DB_PATH = "/app/data/vault.db"  # same default as server._startup
 
@@ -91,6 +103,11 @@ ENV_CLIENT_SECRET = "STRAVA_CLIENT_SECRET"
 ENV_ACCESS_TOKEN = "STRAVA_ACCESS_TOKEN"
 ENV_REFRESH_TOKEN = "STRAVA_REFRESH_TOKEN"
 ENV_ENCRYPTION_KEY = "TOKEN_ENCRYPTION_KEY"
+
+# Exactly what Fernet.generate_key() produces: 32 bytes as url-safe base64,
+# 43 characters and one "=". Checked before decoding because base64 decoding is
+# lenient in ways that differ between Python versions.
+_FERNET_KEY_SHAPE = re.compile(r"[A-Za-z0-9_-]{43}=")
 
 _BAD_KEY_MESSAGE = (
     "TOKEN_ENCRYPTION_KEY is set but is not a valid Fernet key, so the server would "
@@ -180,17 +197,36 @@ def _state_matches(query: dict, expected_state: str) -> bool:
 
 
 def _parse_request_head(head: bytes):
-    """(method, path, query) from an HTTP request head, or None."""
-    line = head.split(b"\n", 1)[0].rstrip(b"\r")
+    """(method, path, params, host) from an HTTP request head, or None.
+
+    Split by hand, not with urllib.parse.urlsplit: urlsplit raises ValueError
+    on targets like "//[x", and it strips tabs and leading control characters
+    and accepts absolute URLs, which let "/call\\tback", "\\x01/callback" and
+    "http://evil.example/callback" all count as /callback. Here the path is
+    everything before the first "?", compared exactly.
+    """
+    lines = head.split(b"\n")
     try:
-        parts = line.decode("ascii").split(" ")
+        parts = lines[0].rstrip(b"\r").decode("ascii").split(" ")
     except UnicodeDecodeError:
         return None
     if len(parts) != 3 or not parts[2].startswith("HTTP/"):
         return None
     method, target, _ = parts
-    parsed = urllib.parse.urlsplit(target)
-    return method, parsed.path, urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    path, _, query = target.partition("?")
+    try:
+        params = urllib.parse.parse_qs(
+            query, keep_blank_values=True, max_num_fields=MAX_QUERY_FIELDS
+        )
+    except ValueError:
+        return None
+    hosts = []
+    for raw in lines[1:]:
+        name, sep, value = raw.rstrip(b"\r").decode("latin-1").partition(":")
+        if sep and name.lower() == "host":
+            hosts.append(value.strip().lower())
+    host = hosts[0] if len(hosts) == 1 else None
+    return method, path, params, host
 
 
 def _respond(conn: socket.socket, status: str, page: bytes, deadline: float) -> None:
@@ -209,14 +245,17 @@ def _respond(conn: socket.socket, status: str, page: bytes, deadline: float) -> 
         pass
 
 
-def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: float):
-    """Serve the listener until the first GET /callback or the deadline.
+def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: float, out):
+    """Serve the listener until a GET /callback with the right state arrives.
 
-    Returns that request's query, or None on timeout. Every connection is
-    non-blocking and read under the same deadline, so no client, however slow
-    or idle, can hold the wait open past it, and an idle connection never
-    blocks one that is ready.
+    Returns that request's query, or None on timeout; raises LoginError after
+    MAX_REFUSALS wrong-state requests. Every connection is non-blocking and
+    read under the same deadline, so no client, however slow or idle, can hold
+    the wait open past it, and an idle connection never blocks a ready one.
     """
+    port = listener.getsockname()[1]
+    allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    refusals = 0
     selector = selectors.DefaultSelector()
     buffers: dict = {}
 
@@ -268,17 +307,34 @@ def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: f
                 request = _parse_request_head(bytes(buffer))
                 selector.unregister(sock)
                 del buffers[sock]
-                if request is None or request[0] != "GET" or request[1] != CALLBACK_PATH:
+                if (
+                    request is None
+                    or request[0] != "GET"
+                    or request[1] != CALLBACK_PATH
+                    or request[3] not in allowed_hosts
+                ):
                     _respond(sock, "404 Not Found", _NOT_FOUND_PAGE, deadline)
                     sock.close()
                     continue
                 query = request[2]
                 if _state_matches(query, expected_state):
                     _respond(sock, "200 OK", _SUCCESS_PAGE, deadline)
-                else:
-                    _respond(sock, "400 Bad Request", _REFUSED_PAGE, deadline)
+                    sock.close()
+                    return query
+                # Wrong or missing state. State is 256 random bits, so a guess
+                # cannot win; ending here would only hand any web page a way to
+                # kill the sign-in. Refuse it and keep waiting.
+                _respond(sock, "400 Bad Request", _REFUSED_PAGE, deadline)
                 sock.close()
-                return query
+                refusals += 1
+                print(REFUSAL_LINE, file=out)
+                out.flush()
+                if refusals >= MAX_REFUSALS:
+                    raise LoginError(
+                        f"Gave up after {MAX_REFUSALS} requests to /callback without this "
+                        "sign-in's state. Another program or web page on this computer is "
+                        "sending them. Nothing was stored. Close it and run the command again."
+                    )
     finally:
         for conn in list(buffers):
             drop(conn)
@@ -379,9 +435,13 @@ def exchange_code(client_id: str, client_secret: str, code: str, token_url: str)
 
 
 def _fernet_key_is_valid(key: str) -> bool:
-    """The same test cryptography's Fernet() applies to a key: url-safe base64
-    that decodes to exactly 32 bytes. Stdlib only, so the env-file mode can run
-    it without the package installed. tests/test_login.py checks the two agree."""
+    """True only for a key shaped exactly like Fernet.generate_key() output
+    that decodes to 32 bytes. Stricter than Fernet() itself, on purpose: the
+    shape check gives the same answer on every Python, where base64 decoding
+    alone does not (3.14 accepts keys the server's 3.13 Fernet rejects). Stdlib
+    only, so the env-file mode can run it without the package installed."""
+    if not _FERNET_KEY_SHAPE.fullmatch(key):
+        return False
     try:
         raw = base64.urlsafe_b64decode(key.encode())
     except (binascii.Error, ValueError):
@@ -401,10 +461,13 @@ def _db_preflight(db_path: str) -> None:
         ) from None
     key = os.getenv(ENV_ENCRYPTION_KEY)
     if key:
-        # Exactly what the server's encryption module will do with this key.
+        # The shape check, then exactly what the server's encryption module
+        # will do with this key. Either refusal means "not usable".
+        if not _fernet_key_is_valid(key):
+            raise LoginError(_BAD_KEY_MESSAGE)
         try:
             Fernet(key.encode())
-        except Exception:  # any refusal means "not usable"
+        except Exception:
             raise LoginError(_BAD_KEY_MESSAGE) from None
     directory = os.path.dirname(os.path.abspath(db_path))
     try:
@@ -618,13 +681,13 @@ def run_login(
         print("Opening Strava in your browser to approve access.", file=out)
         print("If it does not open, visit this address on this computer:", file=out)
         print(f"  {url}", file=out)
-        print(f"Waiting up to {int(timeout)} seconds...", file=out)
+        print(f"Waiting up to {timeout:g} seconds...", file=out)
         out.flush()
         try:
             open_browser(url)
         except Exception:  # the printed address is the fallback
             pass
-        query = _wait_for_callback(listener, state, deadline)
+        query = _wait_for_callback(listener, state, deadline, out)
     finally:
         listener.close()
     code = _check_callback(query, state)
@@ -682,8 +745,8 @@ def main(
     if not 0 <= args.port <= 65535:
         print("--port must be between 0 and 65535.", file=sys.stderr)
         return 2
-    if args.timeout <= 0:
-        print("--timeout must be more than zero.", file=sys.stderr)
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        print("--timeout must be a number of seconds more than zero.", file=sys.stderr)
         return 2
     if open_browser is None:
         open_browser = (lambda url: False) if args.no_browser else webbrowser.open

@@ -215,8 +215,8 @@ That command needs only Python 3, no install. If you installed the package inste
 
 What it does to keep your credentials safe:
 
-- The temporary listener that catches Strava's redirect accepts connections from this computer only (`127.0.0.1`). It waits for one redirect to `/callback`, with a single 5 minute limit on the whole wait (`--timeout`), and then closes. Other requests a browser makes on the way (a favicon, a spare idle connection) are ignored and cannot use up the sign-in or stretch the limit.
-- Each sign-in carries a fresh random `state` value. The first redirect to `/callback` decides it: without the right `state` it is refused, nothing is stored, and the sign-in ends, so there is no second guess.
+- The temporary listener that catches Strava's redirect accepts connections from this computer only (`127.0.0.1`), with a single 5 minute limit on the whole wait (`--timeout`). It closes as soon as the real redirect arrives or the wait ends. Only an exact `GET /callback` addressed to `localhost` or `127.0.0.1` on its own port is considered; anything else a browser or another program sends (a favicon, an idle connection, a lookalike path) gets a 404 and cannot use up the sign-in or stretch the limit.
+- Each sign-in carries a fresh random `state` value. A `/callback` request without it is refused, nothing is stored, and the terminal says so in one line while it keeps waiting for the real one. After 10 such refusals it stops, because something else on your computer is sending them; run the command again.
 - Tokens and the client secret are never printed or logged. `.env` is rewritten readable by you only. Each line it sets is written as plain `KEY=value` (an `export ` in front of one of those lines is dropped), the file is saved with Unix line endings, and comments and other settings keep their text.
 - If `TOKEN_ENCRYPTION_KEY` is set but is not a valid key, it stops before opening the browser rather than let the server store tokens unencrypted. It only says tokens are encrypted when they were.
 - It refuses to store tokens that lack the `activity:read_all` permission, since every activity request fails without it.
