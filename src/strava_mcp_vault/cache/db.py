@@ -20,6 +20,24 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# Updates Strava's fields in place on a re-sync. Deliberately NOT
+# "INSERT OR REPLACE": that deletes the row and inserts a fresh one, which
+# silently erased location_override, the one column a user sets by hand.
+_UPSERT_ACTIVITY_SQL = """
+    INSERT INTO activities
+        (id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        data = excluded.data,
+        start_date = excluded.start_date,
+        start_date_local = excluded.start_date_local,
+        sport_type = excluded.sport_type,
+        start_lat = excluded.start_lat,
+        start_lon = excluded.start_lon,
+        synced_at = excluded.synced_at
+"""
+
+
 class CacheDB:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -71,8 +89,8 @@ class CacheDB:
 
             -- Curated, human-named riding locations used to build the public
             -- ride-spot export. Deliberately its OWN table rather than a column
-            -- on activities: sync_activities upserts activities with INSERT OR
-            -- REPLACE, which is why location_override gets wiped on every
+            -- on activities: sync_activities used to upsert activities with
+            -- INSERT OR REPLACE, which wiped location_override on every
             -- re-sync. Curation that lives here cannot be destroyed by a sync,
             -- because sync never touches this table.
             CREATE TABLE IF NOT EXISTS ride_spots (
@@ -220,9 +238,7 @@ class CacheDB:
         now = time.time()
         lat, lon = self._extract_latlng(activity)
         await self._db.execute(
-            "INSERT OR REPLACE INTO activities "
-            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            _UPSERT_ACTIVITY_SQL,
             (
                 activity["id"],
                 json.dumps(activity),
@@ -250,12 +266,7 @@ class CacheDB:
             )
             for a in activities
         ]
-        await self._db.executemany(
-            "INSERT OR REPLACE INTO activities "
-            "(id, data, start_date, start_date_local, sport_type, start_lat, start_lon, synced_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
+        await self._db.executemany(_UPSERT_ACTIVITY_SQL, rows)
         await self._db.commit()
 
     async def get_vault_activities(
@@ -320,6 +331,46 @@ class CacheDB:
         cursor = await self._db.execute(f"SELECT COUNT(*) FROM activities {where}", params)
         row = await cursor.fetchone()
         return row[0]
+
+    async def get_vault_totals(
+        self,
+        sport_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> dict:
+        """Sum distance, moving time and elevation over every matching activity.
+
+        Summed in SQL with the same filters as get_vault_activity_count, so the
+        totals always cover exactly the activities that count reports.
+        """
+        conditions = []
+        params = []
+
+        if sport_type:
+            conditions.append("sport_type = ?")
+            params.append(sport_type)
+        if after:
+            conditions.append("start_date_local >= ?")
+            params.append(after)
+        if before:
+            conditions.append("start_date_local < ?")
+            params.append(before)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            "SELECT "
+            "COALESCE(SUM(json_extract(data, '$.distance')), 0), "
+            "COALESCE(SUM(json_extract(data, '$.moving_time')), 0), "
+            "COALESCE(SUM(json_extract(data, '$.total_elevation_gain')), 0) "
+            f"FROM activities {where}",
+            params,
+        )
+        distance_m, moving_time_s, elevation_m = await cursor.fetchone()
+        return {
+            "distance_meters": distance_m,
+            "moving_time_seconds": moving_time_s,
+            "elevation_meters": elevation_m,
+        }
 
     async def get_vault_sport_type_summary(
         self,
@@ -465,8 +516,8 @@ class CacheDB:
         the dicts, so the guarantee does not rest on this WHERE clause alone.
 
         Reads only the `activities` table. It deliberately does not touch the
-        cache table, whose `activity_detail` entries are overwritten with
-        stripped-down summaries by every sync.
+        cache table, whose `activity_detail` entries expire after a day and,
+        before sync stopped writing them, held stripped-down list summaries.
         """
         if not sport_types:
             return []
@@ -500,10 +551,10 @@ class CacheDB:
     async def get_activity_row(self, activity_id: int) -> dict | None:
         """Return one activity's stored Strava JSON, or None if not in the vault.
 
-        Reads the `activities` table, never the cache: sync overwrites the
-        `activity_detail` cache entries with stripped-down list summaries
-        (audit finding 2), so the cache path loses `visibility` and `map` for a
-        day after every sync, and both are load-bearing here.
+        Reads the `activities` table, never the cache: the `activity_detail`
+        cache entries expire after a day, and sync used to overwrite them with
+        stripped-down list summaries (audit finding 2). `visibility` and `map`
+        are load-bearing here, so this reads the permanent row.
         """
         cursor = await self._db.execute("SELECT data FROM activities WHERE id = ?", (activity_id,))
         row = await cursor.fetchone()

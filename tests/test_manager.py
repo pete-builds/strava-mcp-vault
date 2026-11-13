@@ -1,5 +1,7 @@
 """Tests for cache/manager.py."""
 
+import pytest
+
 from strava_mcp_vault.cache.manager import _format_duration, _shape_activity
 
 # ── Helper functions ───────────────────────────────────────────────────
@@ -189,3 +191,111 @@ async def test_gear_resolution(cache_manager, tmp_db, sample_activity):
     result = await cache_manager.get_recent_activities(count=5)
     # The mock client returns {"name": "Trek Domane"} for get_gear
     assert any(a.get("gear_name") == "Trek Domane" for a in result)
+
+
+# ── Data integrity across re-syncs ─────────────────────────────────────
+
+
+async def test_window_sync_keeps_location_override(cache_manager, tmp_db, sample_activity):
+    """A days_back re-sync re-pulls activities the vault already holds.
+
+    The location a user set by hand must survive it, and must still be what
+    get_activities_near reports.
+    """
+    await tmp_db.upsert_activities_batch([sample_activity])
+    await tmp_db.set_location_override(sample_activity["id"], "Ithaca, NY")
+
+    cache_manager.client.get_activities.side_effect = [[sample_activity], []]
+    await cache_manager.sync_activities(days_back=30)
+
+    near = await tmp_db.get_activities_near_location(42.4440, -76.5019, radius_miles=1)
+    assert [a["_location_override"] for a in near] == ["Ithaca, NY"]
+
+
+async def test_sync_does_not_shadow_full_activity_detail(cache_manager, sample_activity):
+    """Strava's list endpoint returns summaries: no description, gear, or laps.
+
+    After a sync, get_activity must still fetch the full record rather than
+    serve the summary the sync just pulled.
+    """
+    summary = {k: v for k, v in sample_activity.items() if k != "calories"}
+    detail = {
+        **sample_activity,
+        "description": "Cayuga loop with the crew",
+        "gear": {"id": "g12345", "name": "Trek Domane"},
+        "laps": [{"lap_index": 1}],
+    }
+    cache_manager.client.get_activities.side_effect = [[summary], []]
+    cache_manager.client.get_activity.return_value = detail
+
+    await cache_manager.sync_activities()
+    result = await cache_manager.get_activity(sample_activity["id"])
+
+    assert cache_manager.client.get_activity.call_count == 1
+    assert result["description"] == "Cayuga loop with the crew"
+    assert result["gear"]["name"] == "Trek Domane"
+
+
+async def test_query_vault_totals_count_every_activity(cache_manager, tmp_db):
+    """Totals must cover every matching activity, not the first 1,000."""
+    rides = [
+        {
+            "id": 500000 + i,
+            "sport_type": "Ride",
+            "distance": 1609.344,  # one mile
+            "moving_time": 50,
+            "total_elevation_gain": 1.0,
+            "start_date": f"2020-01-01T00:{i // 60 % 60:02d}:{i % 60:02d}Z",
+            "start_date_local": f"20{20 + i // 400}-01-01T00:00:00",
+        }
+        for i in range(1200)
+    ]
+    runs = [
+        {
+            "id": 900000 + i,
+            "sport_type": "Run",
+            "distance": 5000.0,
+            "moving_time": 1500,
+            "total_elevation_gain": 20.0,
+            "start_date": "2024-06-01T00:00:00Z",
+            "start_date_local": "2024-06-01T00:00:00",
+        }
+        for i in range(3)
+    ]
+    # One summary with nulls, as Strava returns for manual entries.
+    blank = {
+        "id": 999999,
+        "sport_type": "Ride",
+        "distance": None,
+        "moving_time": None,
+        "total_elevation_gain": None,
+        "start_date": "2024-06-02T00:00:00Z",
+        "start_date_local": "2024-06-02T00:00:00",
+    }
+    await tmp_db.upsert_activities_batch(rides + runs + [blank])
+
+    everything = await cache_manager.query_vault()
+    assert everything["total_activities"] == 1204
+    assert everything["total_distance_meters"] == pytest.approx(1200 * 1609.344 + 3 * 5000)
+    assert everything["total_moving_time_seconds"] == 1200 * 50 + 3 * 1500
+    assert everything["total_elevation_meters"] == pytest.approx(1200 * 1.0 + 3 * 20.0)
+
+    only_rides = await cache_manager.query_vault(sport_type="Ride")
+    assert only_rides["total_activities"] == 1201
+    assert only_rides["total_distance_meters"] / 1609.344 == pytest.approx(1200)
+    assert only_rides["total_moving_time_seconds"] == 60000
+
+    # Rides dated 2020, 2021, 2022 (400 each); the date window keeps one year.
+    one_year = await cache_manager.query_vault(
+        sport_type="Ride", after="2021-01-01", before="2022-01-01"
+    )
+    assert one_year["total_activities"] == 400
+    assert one_year["total_moving_time_seconds"] == 400 * 50
+
+
+async def test_query_vault_totals_empty_vault_are_zero(cache_manager):
+    result = await cache_manager.query_vault()
+    assert result["total_activities"] == 0
+    assert result["total_distance_meters"] == 0
+    assert result["total_moving_time_seconds"] == 0
+    assert result["total_elevation_meters"] == 0

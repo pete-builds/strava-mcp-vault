@@ -186,28 +186,21 @@ class CacheManager:
         if sport_type:
             breakdown = [b for b in breakdown if b["sport_type"] == sport_type]
 
-        # Pull matching activities for aggregate stats
-        activities = await self.db.get_vault_activities(
-            limit=1000,
+        # Summed in SQL over every match. This used to sum the first 1,000 rows
+        # in Python, so a long history reported the right count beside a total
+        # distance that silently stopped growing.
+        totals = await self.db.get_vault_totals(
             sport_type=sport_type,
             after=after,
             before=before,
         )
 
-        total_distance_m = 0
-        total_moving_time_s = 0
-        total_elevation_m = 0
-        for a in activities:
-            total_distance_m += a.get("distance") or 0
-            total_moving_time_s += a.get("moving_time") or 0
-            total_elevation_m += a.get("total_elevation_gain") or 0
-
         return {
             "total_activities": total,
             "breakdown_by_type": breakdown,
-            "total_distance_meters": total_distance_m,
-            "total_moving_time_seconds": total_moving_time_s,
-            "total_elevation_meters": total_elevation_m,
+            "total_distance_meters": totals["distance_meters"],
+            "total_moving_time_seconds": totals["moving_time_seconds"],
+            "total_elevation_meters": totals["elevation_meters"],
             "filters": {
                 "sport_type": sport_type,
                 "after": after,
@@ -246,9 +239,9 @@ class CacheManager:
     async def get_activity_photos(self, activity_id: int, size: int = 2048) -> list:
         """Return an activity's photos, cached for 7 days.
 
-        Cached under its own key rather than the activity_detail key, which sync
-        overwrites with stripped-down list summaries (audit finding 2). Building
-        on that key would mean photos vanishing for 24 hours after every sync.
+        Cached under its own key rather than the activity_detail key, so photos
+        never depend on what that entry holds. Sync used to overwrite it with
+        stripped-down list summaries (audit finding 2).
         """
         key = f"activity_photos:{activity_id}:{size}"
         cached = await self.db.get_cached(key)
@@ -349,7 +342,9 @@ class CacheManager:
           a specific window.
 
         Each activity is stored permanently in the vault (activities table).
-        Activity detail is also cached with TTL for the get_activity tool.
+        A re-sync refreshes Strava's fields and keeps any location set with
+        set_activity_location. Full detail is left to get_activity, which
+        fetches and caches it on first request.
 
         Returns a summary with counts, mode, and API usage.
         """
@@ -386,19 +381,12 @@ class CacheManager:
             logger.info("Sync page %d: got %d activities", page, len(batch))
             page += 1
 
-        # Store in vault (permanent)
+        # Store in vault (permanent). Nothing goes into the activity_detail
+        # cache: these are list summaries with no description, gear or laps,
+        # and caching them under get_activity's key made "full details" serve
+        # the summary for a day after every sync.
         if all_activities:
             await self.db.upsert_activities_batch(all_activities)
-
-        # Also cache each activity individually (for get_activity detail lookups)
-        for activity in all_activities:
-            activity_key = f"activity:{activity['id']}"
-            await self.db.set_cached(
-                activity_key,
-                "activity_detail",
-                activity,
-                TTL["activity_detail"],
-            )
 
         vault_count_after = await self.db.get_vault_activity_count()
         new_activities = vault_count_after - vault_count_before
