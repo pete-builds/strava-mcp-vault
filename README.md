@@ -215,12 +215,15 @@ That command needs only Python 3, no install. If you installed the package inste
 
 What it does to keep your credentials safe:
 
-- The temporary listener that catches Strava's redirect accepts connections from this computer only (`127.0.0.1`), takes exactly one request, and closes after it or after 5 minutes (`--timeout`).
-- Each sign-in carries a fresh random `state` value. A redirect without it is refused, and nothing is stored.
-- Tokens and the client secret are never printed or logged. `.env` is rewritten readable by you only, and every other line in it is left as it was.
+- The temporary listener that catches Strava's redirect accepts connections from this computer only (`127.0.0.1`). It waits for one redirect to `/callback`, with a single 5 minute limit on the whole wait (`--timeout`), and then closes. Other requests a browser makes on the way (a favicon, a spare idle connection) are ignored and cannot use up the sign-in or stretch the limit.
+- Each sign-in carries a fresh random `state` value. The first redirect to `/callback` decides it: without the right `state` it is refused, nothing is stored, and the sign-in ends, so there is no second guess.
+- Tokens and the client secret are never printed or logged. `.env` is rewritten readable by you only. Each line it sets is written as plain `KEY=value` (an `export ` in front of one of those lines is dropped), the file is saved with Unix line endings, and comments and other settings keep their text.
+- If `TOKEN_ENCRYPTION_KEY` is set but is not a valid key, it stops before opening the browser rather than let the server store tokens unencrypted. It only says tokens are encrypted when they were.
 - It refuses to store tokens that lack the `activity:read_all` permission, since every activity request fails without it.
 
 The server copies the tokens from `.env` into its vault the first time it starts with an empty vault. After that it refreshes them on its own and stores them in SQLite (encrypted if you set `TOKEN_ENCRYPTION_KEY`).
+
+> **Already running with Docker? Running this command again changes nothing.** Once the server's vault holds tokens, it never reads `STRAVA_ACCESS_TOKEN` or `STRAVA_REFRESH_TOKEN` from `.env` again, so new tokens written there are ignored. You do not need to re-run it: the server keeps its own tokens fresh.
 
 **Server with no browser (reached over SSH):** forward a port, then run the command on the server and open the address it prints in your own browser:
 

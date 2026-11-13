@@ -7,12 +7,15 @@ with a web browser:
 1. It reads the Strava client id and secret from the environment (or the env
    file given with ``--env-file``), and prompts for whichever is missing. The
    secret prompt does not echo.
-2. It starts a one-shot listener bound to 127.0.0.1 only, on a free port (or
+2. It starts a listener bound to 127.0.0.1 only, on a free port (or
    ``--port``).
 3. It opens the browser at Strava's authorize URL with a random ``state``.
-4. It accepts exactly one request. Anything that is not a ``/callback`` whose
-   ``state`` matches is refused, and nothing is stored. The listener closes
-   after that one request or after ``--timeout`` seconds, whichever is first.
+4. It waits for ONE ``GET /callback``, with a single deadline (``--timeout``)
+   covering the whole wait, including slow or idle connections. Connections
+   that close early, sit idle, or ask for anything else (a favicon, say) are
+   answered or dropped and do not count. The first ``GET /callback`` ends the
+   wait either way: if its ``state`` does not match, the sign-in is refused and
+   nothing is stored, so there is no second guess. The listener then closes.
 5. It exchanges the code for tokens and stores them where the server will look:
 
    * Default: the vault database at ``VAULT_DB_PATH``, written through
@@ -25,8 +28,12 @@ with a web browser:
      prints one next step: ``docker compose up -d``.
 
 Tokens, the authorization code, and the client secret are never printed or
-logged. The callback handler's request logging is switched off because the
-default handler writes the full request line, code included, to stderr.
+logged. The listener is a small socket loop rather than ``http.server``, whose
+handler writes the full request line, code included, to stderr.
+
+If ``TOKEN_ENCRYPTION_KEY`` is set but is not a valid Fernet key, the command
+refuses before the browser opens. The server's encryption module would fall
+back to plain text on such a key without saying so.
 
 The env-file mode imports nothing outside the standard library, so it also runs
 straight from a clone with no install: ``python3 src/strava_mcp_vault/login.py
@@ -37,19 +44,22 @@ straight from a clone with no install: ``python3 src/strava_mcp_vault/login.py
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import getpass
 import json
 import os
 import re
 import secrets
-import socketserver
+import selectors
+import socket
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from http.server import BaseHTTPRequestHandler
 
 AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
@@ -68,9 +78,11 @@ LISTEN_HOST = "127.0.0.1"
 # the loopback address the listener is bound to.
 REDIRECT_HOST = "localhost"
 DEFAULT_TIMEOUT = 300
-# Per-connection read timeout, so a client that connects and sends nothing
-# cannot hold the one-shot listener open past the overall deadline.
-REQUEST_READ_TIMEOUT = 10
+# A request head bigger than this is not a browser following a redirect.
+MAX_REQUEST_BYTES = 16384
+# Open connections held at once. Past this the oldest is dropped, so a flood of
+# idle connections cannot crowd out the real redirect.
+MAX_OPEN_CONNECTIONS = 32
 TOKEN_REQUEST_TIMEOUT = 30
 DEFAULT_DB_PATH = "/app/data/vault.db"  # same default as server._startup
 
@@ -78,6 +90,13 @@ ENV_CLIENT_ID = "STRAVA_CLIENT_ID"
 ENV_CLIENT_SECRET = "STRAVA_CLIENT_SECRET"
 ENV_ACCESS_TOKEN = "STRAVA_ACCESS_TOKEN"
 ENV_REFRESH_TOKEN = "STRAVA_REFRESH_TOKEN"
+ENV_ENCRYPTION_KEY = "TOKEN_ENCRYPTION_KEY"
+
+_BAD_KEY_MESSAGE = (
+    "TOKEN_ENCRYPTION_KEY is set but is not a valid Fernet key, so the server would "
+    "store the tokens unencrypted without saying so. Fix the key (or remove it if you "
+    "mean to store tokens unencrypted), then run again. Nothing was stored."
+)
 
 # Values copied verbatim from .env.example. Treated as "not set".
 _PLACEHOLDERS = {"", "your-client-id", "your-client-secret"}
@@ -95,6 +114,11 @@ _REFUSED_PAGE = (
     b"<!doctype html><meta charset=utf-8><title>strava-mcp-vault</title>"
     b"<p>This sign-in was not accepted. Return to your terminal.</p>"
 )
+_NOT_FOUND_PAGE = b"Not found"
+
+# The temp file an env-file write goes through. .gitignore covers this shape.
+_ENV_TMP_PREFIX = ".env."
+_ENV_TMP_SUFFIX = ".tmp"
 
 
 class LoginError(Exception):
@@ -128,44 +152,17 @@ def build_authorize_url(
 # --------------------------------------------------------------------------
 
 
-class _CallbackHandler(BaseHTTPRequestHandler):
-    timeout = REQUEST_READ_TIMEOUT
-
-    def do_GET(self):  # noqa: N802 - name fixed by BaseHTTPRequestHandler
-        parsed = urllib.parse.urlsplit(self.path)
-        self.server.received = {
-            "path": parsed.path,
-            "query": urllib.parse.parse_qs(parsed.query, keep_blank_values=True),
-        }
-        page = _SUCCESS_PAGE if _state_matches(self.server) else _REFUSED_PAGE
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(page)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.end_headers()
-        self.wfile.write(page)
-
-    def log_message(self, format, *args):  # noqa: A002 - signature fixed by base class
-        # The default writes the request line to stderr, and the request line
-        # carries the authorization code. Log nothing.
-        return
-
-
-class _OneShotServer(socketserver.TCPServer):
-    # TCPServer rather than http.server.HTTPServer: HTTPServer.server_bind does
-    # a reverse DNS lookup of the bind address, which can stall for seconds.
-    allow_reuse_address = False
-
-    def __init__(self, port: int, expected_state: str):
-        self.expected_state = expected_state
-        self.received: dict | None = None
-        self.got_connection = False
-        super().__init__((LISTEN_HOST, port), _CallbackHandler)
-
-    def verify_request(self, request, client_address):
-        self.got_connection = True
-        return True
+def _open_listener(port: int) -> socket.socket:
+    """A listening socket on 127.0.0.1 only. No SO_REUSEADDR, so the port
+    cannot be shared with another process."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((LISTEN_HOST, port))
+        sock.listen(16)
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 def _single(query: dict, name: str) -> str | None:
@@ -175,32 +172,132 @@ def _single(query: dict, name: str) -> str | None:
     return values[0]
 
 
-def _state_matches(server: _OneShotServer) -> bool:
-    received = server.received
-    if received is None or received["path"] != CALLBACK_PATH:
-        return False
-    state = _single(received["query"], "state")
+def _state_matches(query: dict, expected_state: str) -> bool:
+    state = _single(query, "state")
     if state is None:
         return False
-    return secrets.compare_digest(state.encode(), server.expected_state.encode())
+    return secrets.compare_digest(state.encode(), expected_state.encode())
 
 
-def _check_callback(server: _OneShotServer) -> str:
+def _parse_request_head(head: bytes):
+    """(method, path, query) from an HTTP request head, or None."""
+    line = head.split(b"\n", 1)[0].rstrip(b"\r")
+    try:
+        parts = line.decode("ascii").split(" ")
+    except UnicodeDecodeError:
+        return None
+    if len(parts) != 3 or not parts[2].startswith("HTTP/"):
+        return None
+    method, target, _ = parts
+    parsed = urllib.parse.urlsplit(target)
+    return method, parsed.path, urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+
+
+def _respond(conn: socket.socket, status: str, page: bytes, deadline: float) -> None:
+    head = (
+        f"HTTP/1.1 {status}\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        f"Content-Length: {len(page)}\r\n"
+        "Cache-Control: no-store\r\n"
+        "Referrer-Policy: no-referrer\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+    try:
+        conn.settimeout(max(0.05, min(5.0, deadline - time.monotonic())))
+        conn.sendall(head + page)
+    except OSError:
+        pass
+
+
+def _wait_for_callback(listener: socket.socket, expected_state: str, deadline: float):
+    """Serve the listener until the first GET /callback or the deadline.
+
+    Returns that request's query, or None on timeout. Every connection is
+    non-blocking and read under the same deadline, so no client, however slow
+    or idle, can hold the wait open past it, and an idle connection never
+    blocks one that is ready.
+    """
+    selector = selectors.DefaultSelector()
+    buffers: dict = {}
+
+    def drop(conn):
+        # Idempotent: a connection can be dropped by the cap and then come up
+        # again as ready in the same select() batch.
+        if buffers.pop(conn, None) is None:
+            return
+        selector.unregister(conn)
+        conn.close()
+
+    listener.setblocking(False)
+    selector.register(listener, selectors.EVENT_READ)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            for key, _ in selector.select(timeout=remaining):
+                sock = key.fileobj
+                if sock is listener:
+                    try:
+                        conn, _ = listener.accept()
+                    except OSError:
+                        continue
+                    conn.setblocking(False)
+                    if len(buffers) >= MAX_OPEN_CONNECTIONS:
+                        drop(next(iter(buffers)))
+                    buffers[conn] = bytearray()
+                    selector.register(conn, selectors.EVENT_READ)
+                    continue
+                if sock not in buffers:  # dropped earlier in this same batch
+                    continue
+                try:
+                    chunk = sock.recv(4096)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    chunk = b""
+                if not chunk:  # closed before sending a whole request
+                    drop(sock)
+                    continue
+                buffer = buffers[sock]
+                buffer += chunk
+                if b"\r\n\r\n" not in buffer and b"\n\n" not in buffer:
+                    if len(buffer) > MAX_REQUEST_BYTES:
+                        drop(sock)
+                    continue
+                request = _parse_request_head(bytes(buffer))
+                selector.unregister(sock)
+                del buffers[sock]
+                if request is None or request[0] != "GET" or request[1] != CALLBACK_PATH:
+                    _respond(sock, "404 Not Found", _NOT_FOUND_PAGE, deadline)
+                    sock.close()
+                    continue
+                query = request[2]
+                if _state_matches(query, expected_state):
+                    _respond(sock, "200 OK", _SUCCESS_PAGE, deadline)
+                else:
+                    _respond(sock, "400 Bad Request", _REFUSED_PAGE, deadline)
+                sock.close()
+                return query
+    finally:
+        for conn in list(buffers):
+            drop(conn)
+        selector.close()
+
+
+def _check_callback(query: dict | None, expected_state: str) -> str:
     """Return the authorization code, or raise LoginError. Order matters:
     the state is checked before anything else in the redirect is believed."""
-    if server.received is None:
-        if server.got_connection:
-            raise LoginError("The sign-in redirect could not be read. Nothing was stored.")
+    if query is None:
         raise LoginError(
             "Timed out waiting for Strava to send you back. Nothing was stored. "
             "Run the command again."
         )
-    if not _state_matches(server):
+    if not _state_matches(query, expected_state):
         raise LoginError(
             "Refused the redirect: it did not carry this sign-in's state value, so it "
             "may not have come from the sign-in you started. Nothing was stored."
         )
-    query = server.received["query"]
     error = _single(query, "error")
     if error is not None:
         if error == "access_denied":
@@ -281,15 +378,34 @@ def exchange_code(client_id: str, client_secret: str, code: str, token_url: str)
 # --------------------------------------------------------------------------
 
 
+def _fernet_key_is_valid(key: str) -> bool:
+    """The same test cryptography's Fernet() applies to a key: url-safe base64
+    that decodes to exactly 32 bytes. Stdlib only, so the env-file mode can run
+    it without the package installed. tests/test_login.py checks the two agree."""
+    try:
+        raw = base64.urlsafe_b64decode(key.encode())
+    except (binascii.Error, ValueError):
+        return False
+    return len(raw) == 32
+
+
 def _db_preflight(db_path: str) -> None:
     """Fail before the browser opens, not after the user has signed in."""
     try:
         import aiosqlite  # noqa: F401
+        from cryptography.fernet import Fernet
     except ImportError:
         raise LoginError(
             "Writing the vault database needs the package installed (pip install .). "
             "For the Docker setup, use --env-file .env instead."
         ) from None
+    key = os.getenv(ENV_ENCRYPTION_KEY)
+    if key:
+        # Exactly what the server's encryption module will do with this key.
+        try:
+            Fernet(key.encode())
+        except Exception:  # any refusal means "not usable"
+            raise LoginError(_BAD_KEY_MESSAGE) from None
     directory = os.path.dirname(os.path.abspath(db_path))
     try:
         os.makedirs(directory, exist_ok=True)  # the server does the same at startup
@@ -315,7 +431,9 @@ async def _write_db(db_path: str, tokens: dict) -> None:
 
 
 def store_in_vault(db_path: str, tokens: dict) -> bool:
-    """Write tokens through CacheDB.set_tokens. Returns True if encrypted."""
+    """Write tokens through CacheDB.set_tokens. Returns True only if the
+    encryption module really encrypted them, read from its own state after the
+    write, never inferred from the environment."""
     import asyncio
     import logging
 
@@ -335,7 +453,9 @@ def store_in_vault(db_path: str, tokens: dict) -> bool:
         asyncio.run(_write_db(db_path, tokens))
     finally:
         sql_logger.setLevel(previous_level)
-    return bool(os.getenv("TOKEN_ENCRYPTION_KEY"))
+    from strava_mcp_vault.cache import encryption
+
+    return encryption._fernet is not None
 
 
 def _parse_env_value(raw: str) -> str:
@@ -357,7 +477,7 @@ def read_env_file(env_path: str) -> dict:
     with open(env_path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     values = {}
-    for key in (ENV_CLIENT_ID, ENV_CLIENT_SECRET):
+    for key in (ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_ENCRYPTION_KEY):
         pattern = _env_key_pattern(key)
         for line in lines:
             match = pattern.match(line)
@@ -377,10 +497,16 @@ def _env_preflight(env_path: str) -> None:
 
 
 def update_env_file(env_path: str, updates: dict) -> None:
-    """Set each key in the env file, keeping every other line as it was.
+    """Set each key in the env file.
+
+    Lines for other keys and comments keep their text. Two things do change: a
+    replaced line is written as plain KEY=value (an ``export `` prefix on that
+    line is dropped), and the whole file is written with LF line endings, so a
+    CRLF file comes back as LF. Docker Compose reads both forms the same way.
 
     Written to a temporary file in the same directory (created mode 0600) and
-    renamed over the original, so a crash never leaves a half-written file.
+    renamed over the original, so a crash never leaves a half-written file. The
+    temp file is removed on every failure this function can catch.
     """
     for value in updates.values():
         if not _SAFE_VALUE.match(value):
@@ -400,17 +526,24 @@ def update_env_file(env_path: str, updates: dict) -> None:
         if not replaced:
             lines.append(f"{key}={value}")
     directory = os.path.dirname(real_path)
-    fd, tmp_path = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=directory)
+    fd, tmp_path = tempfile.mkstemp(prefix=_ENV_TMP_PREFIX, suffix=_ENV_TMP_SUFFIX, dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        try:
+            fh = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with fh:
             fh.write("\n".join(lines) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, real_path)
     except BaseException:
-        if os.path.exists(tmp_path):
+        try:
             os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
 
 
@@ -471,13 +604,15 @@ def run_login(
     out = out or sys.stdout
     state = secrets.token_urlsafe(32)
     try:
-        server = _OneShotServer(port, state)
+        listener = _open_listener(port)
     except OSError:
         raise LoginError(
             f"Could not listen on {LISTEN_HOST}:{port}. Choose another port with --port."
         ) from None
+    # One deadline for the whole wait, set before the browser is even opened.
+    deadline = time.monotonic() + timeout
     try:
-        bound_port = server.server_address[1]
+        bound_port = listener.getsockname()[1]
         redirect_uri = f"http://{REDIRECT_HOST}:{bound_port}{CALLBACK_PATH}"
         url = build_authorize_url(client_id, redirect_uri, state, authorize_url)
         print("Opening Strava in your browser to approve access.", file=out)
@@ -487,13 +622,12 @@ def run_login(
         out.flush()
         try:
             open_browser(url)
-        except Exception:  # noqa: BLE001 - the printed address is the fallback
+        except Exception:  # the printed address is the fallback
             pass
-        server.timeout = timeout
-        server.handle_request()  # exactly one request, or the timeout
+        query = _wait_for_callback(listener, state, deadline)
     finally:
-        server.server_close()
-    code = _check_callback(server)
+        listener.close()
+    code = _check_callback(query, state)
     return exchange_code(client_id, client_secret, code, token_url)
 
 
@@ -523,7 +657,9 @@ def _parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
-        help=f"Seconds to wait for the browser (default: {DEFAULT_TIMEOUT}).",
+        help=(
+            f"Seconds to wait, in total, for Strava to send you back (default: {DEFAULT_TIMEOUT})."
+        ),
     )
     parser.add_argument(
         "--no-browser",
@@ -557,6 +693,10 @@ def main(
             env_path = args.env_file
             _env_preflight(env_path)
             file_values = read_env_file(env_path)
+            # The server reads the key from this file inside the container.
+            env_key = file_values.get(ENV_ENCRYPTION_KEY)
+            if env_key and not _fernet_key_is_valid(env_key):
+                raise LoginError(_BAD_KEY_MESSAGE)
         else:
             # Same .env loading as the server, so VAULT_DB_PATH and
             # TOKEN_ENCRYPTION_KEY resolve to what the server will use.
@@ -596,11 +736,29 @@ def main(
                 updates[ENV_CLIENT_ID] = client_id
             if not _clean(file_values.get(ENV_CLIENT_SECRET)):
                 updates[ENV_CLIENT_SECRET] = client_secret
-            update_env_file(env_path, updates)
+            try:
+                update_env_file(env_path, updates)
+            except OSError as exc:
+                raise LoginError(
+                    f"Could not write {env_path} ({exc.strerror or type(exc).__name__}). "
+                    "It was left as it was. Nothing was stored."
+                ) from None
             where = f"{env_path} (readable by you only)"
             next_step = "docker compose up -d"
         else:
-            encrypted = store_in_vault(db_path, tokens)
+            try:
+                encrypted = store_in_vault(db_path, tokens)
+            except Exception as exc:  # the message must not carry values
+                detail = getattr(exc, "strerror", None) or type(exc).__name__
+                raise LoginError(f"Could not write the vault at {db_path} ({detail}).") from None
+            if os.getenv(ENV_ENCRYPTION_KEY) and not encrypted:
+                print(
+                    f"Tokens were saved to the vault at {db_path} but NOT encrypted, although "
+                    "TOKEN_ENCRYPTION_KEY is set: the encryption module could not use it. "
+                    "Fix the key before starting the server.",
+                    file=sys.stderr,
+                )
+                return 1
             where = f"the vault at {db_path}" + (
                 ", encrypted with TOKEN_ENCRYPTION_KEY"
                 if encrypted
